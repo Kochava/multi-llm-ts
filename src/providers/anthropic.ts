@@ -297,6 +297,10 @@ export default class extends LlmEngine {
       if (opts?.usage && response.usage && completion.usage) {
         completion.usage.prompt_tokens += response.usage.input_tokens
         completion.usage.completion_tokens += response.usage.output_tokens
+        if (completion.usage.prompt_tokens_details) {
+          completion.usage.prompt_tokens_details.cached_tokens = (completion.usage.prompt_tokens_details.cached_tokens ?? 0) + (response.usage.cache_read_input_tokens ?? 0)
+          completion.usage.prompt_tokens_details.cache_creation_tokens = (completion.usage.prompt_tokens_details.cache_creation_tokens ?? 0) + (response.usage.cache_creation_input_tokens ?? 0)
+        }
       }
 
       // done
@@ -313,6 +317,11 @@ export default class extends LlmEngine {
       ...(opts?.usage && response.usage ? { usage: {
         prompt_tokens: response.usage.input_tokens,
         completion_tokens: response.usage.output_tokens,
+        context_window_tokens: (response.usage.input_tokens ?? 0) + (response.usage.cache_read_input_tokens ?? 0) + (response.usage.cache_creation_input_tokens ?? 0),
+        prompt_tokens_details: {
+          cached_tokens: response.usage.cache_read_input_tokens ?? 0,
+          cache_creation_tokens: response.usage.cache_creation_input_tokens ?? 0,
+        },
       } } : {}),
     }
   }
@@ -553,6 +562,10 @@ export default class extends LlmEngine {
       if ('cache_read_input_tokens' in usage && context.requestUsage.prompt_tokens_details?.cached_tokens !== undefined) {
         context.requestUsage.prompt_tokens_details.cached_tokens = (usage as Usage).cache_read_input_tokens ?? 0
       }
+      if ('cache_creation_input_tokens' in usage && context.requestUsage.prompt_tokens_details?.cache_creation_tokens !== undefined) {
+        context.requestUsage.prompt_tokens_details.cache_creation_tokens = (usage as Usage).cache_creation_input_tokens ?? 0
+      }
+      context.requestUsage.context_window_tokens = (context.requestUsage.prompt_tokens ?? 0) + (context.requestUsage.prompt_tokens_details?.cached_tokens ?? 0) + (context.requestUsage.prompt_tokens_details?.cache_creation_tokens ?? 0)
       context.requestUsage.completion_tokens = usage.output_tokens ?? 0
     }
 

@@ -345,9 +345,11 @@ test('OpenAI Responses API completion with tools', async () => {
     openAIResponseId: 'resp_123',
     usage: {
       prompt_tokens: 20,
+      context_window_tokens: 10,
       completion_tokens: 40,
       prompt_tokens_details: {
         cached_tokens: 0,
+        cache_creation_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {
@@ -402,9 +404,11 @@ test('OpenAI Responses API stream without tools', async () => {
     type: 'usage',
     usage: {
       prompt_tokens: 10,
+      context_window_tokens: 10,
       completion_tokens: 20,
       prompt_tokens_details: {
         cached_tokens: 0,
+        cache_creation_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {
@@ -512,9 +516,11 @@ test('OpenAI Responses API stream with tools', async () => {
     type: 'usage',
     usage: {
       prompt_tokens: 20,
+      context_window_tokens: 10,
       completion_tokens: 40,
       prompt_tokens_details: {
         cached_tokens: 0,
+        cache_creation_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {

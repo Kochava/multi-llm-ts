@@ -317,6 +317,11 @@ export default class extends LlmEngine {
       delete response.usage.total_tokens
     }
 
+    // context-window snapshot: openai prompt_tokens already includes cache
+    if (response.usage) {
+      (response.usage as LlmUsage).context_window_tokens = response.usage.prompt_tokens ?? 0
+    }
+
     // done
     return {
       type: 'text',
@@ -468,6 +473,8 @@ export default class extends LlmEngine {
     // cumulate usage
     if (chunk.usage && context.opts?.usage) {
       this.accumulateUsage(context.usage, chunk.usage)
+      // context-window snapshot of the latest request (cache already included)
+      context.usage.context_window_tokens = chunk.usage.prompt_tokens ?? 0
     }
 
     // tool calls - normalize and process
@@ -1293,6 +1300,7 @@ export default class extends LlmEngine {
   private accumulateResponsesUsage(cumulate: LlmUsage, usage: ResponseUsage) {
     cumulate.prompt_tokens += usage.input_tokens
     cumulate.completion_tokens += usage.output_tokens
+    cumulate.context_window_tokens = usage.input_tokens ?? 0
     cumulate.prompt_tokens_details!.cached_tokens! += usage.input_tokens_details.cached_tokens
     cumulate.completion_tokens_details!.reasoning_tokens! += usage.output_tokens_details.reasoning_tokens
   }
