@@ -6,7 +6,7 @@ import LlmEngine from '../engine'
 import logger from '../logger'
 import Message from '../models/message'
 import { ChatModel, EngineCreateOpts, ModelCapabilities, ModelGroq } from '../types/index'
-import { LlmChunk, LlmCompletionOpts, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCall, LlmToolCallInfo } from '../types/llm'
+import { LlmChunk, LlmCompletionOpts, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCall, LlmToolCallInfo, LlmUsage } from '../types/llm'
 import { PluginExecutionResult } from '../types/plugin'
 import { toOpenAITools } from '../tools'
 import { zeroUsage } from '../usage'
@@ -179,6 +179,11 @@ export default class extends LlmEngine {
       delete response.usage.total_tokens
     }
 
+    // context-window snapshot: prompt_tokens already includes any cache
+    if (response.usage) {
+      (response.usage as LlmUsage).context_window_tokens = response.usage.prompt_tokens ?? 0
+    }
+
     // return an object
     return {
       type: 'text',
@@ -291,6 +296,8 @@ export default class extends LlmEngine {
     if (context.opts?.usage && chunk.x_groq?.usage) {
       context.usage.prompt_tokens += chunk.x_groq.usage.prompt_tokens ?? 0
       context.usage.completion_tokens += chunk.x_groq.usage.completion_tokens ?? 0
+      // context-window snapshot of the latest request
+      context.usage.context_window_tokens = chunk.x_groq.usage.prompt_tokens ?? 0
     }
 
 
