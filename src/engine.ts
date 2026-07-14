@@ -567,6 +567,20 @@ export default abstract class LlmEngine {
             lastMessage.function.arguments = currentTool.args
           }
         }
+        // station1: when enabled, emit a heartbeat chunk on every argument
+        // delta so consumers can distinguish a healthy long tool-argument
+        // stream from a dead connection (e.g. to drive a stall watchdog)
+        if (this.config.toolCallHeartbeats) {
+          yield {
+            type: 'tool',
+            id: currentTool.id,
+            name: currentTool.function,
+            state: 'preparing',
+            status: this.getToolPreparationDescription(currentTool.function),
+            heartbeat: true,
+            done: false
+          } as LlmChunk
+        }
       }
     }
   }

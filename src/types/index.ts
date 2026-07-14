@@ -9,6 +9,9 @@ export type EngineCreateOpts = {
   useOpenAIResponsesApi?: boolean
   preferResponses?: boolean
   requestCooldown?: number
+  // station1: emit a heartbeat tool chunk per tool-argument delta so
+  // consumers can detect stalled streams (default off)
+  toolCallHeartbeats?: boolean
 }
 
 export type ModelsList = {

@@ -1,6 +1,6 @@
 {
   "name": "multi-llm-ts",
-  "version": "5.1.0-beta8",
+  "version": "5.1.0-beta9.station1.1",
   "description": "Library to query multiple LLM providers in a consistent way",
   "repository": {
     "type": "git",
@@ -18,6 +18,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsup",
+    "prepare": "npm run build",
     "lint": "eslint '**/*.ts'",
     "ollama": "node ./tools/update_ollama_models.js",
     "dist": "npm run lint && npx vitest --run && npm run build",
