@@ -95,3 +95,42 @@ test('Tool argument deltas emit no heartbeats by default', async () => {
   expect(toolCalls.length).toBeGreaterThan(0)
   expect(toolCalls.filter((c: any) => c.heartbeat === true)).toHaveLength(0)
 })
+
+test('status-changing deltas never double-yield when heartbeats are enabled', () => {
+  // a plugin whose preparation description varies with the partial args
+  class DynamicPrepPlugin extends Plugin2 {
+    getPreparationDescription(tool?: string, partialArgs?: any): string {
+      return `prep:${partialArgs === undefined ? 0 : JSON.stringify(partialArgs).length}`
+    }
+  }
+  const openai = new OpenAI({ apiKey: '123', toolCallHeartbeats: true })
+  openai.addPlugin(new DynamicPrepPlugin())
+
+  const context = { toolCalls: [] as any[] }
+  const chunks: any[] = [
+    ...(openai as any).processToolCallChunk({ type: 'start', id: '1', name: 'plugin2', args: '' }, context),
+    ...(openai as any).processToolCallChunk({ type: 'delta', id: '1', argumentsDelta: '[ "a' }, context),
+    ...(openai as any).processToolCallChunk({ type: 'delta', id: '1', argumentsDelta: 'rg" ]' }, context),
+  ]
+
+  // every delta changed the status, so each event yields exactly one
+  // regular status chunk — a heartbeat must never ride along
+  expect(chunks).toHaveLength(3)
+  expect(chunks.filter(c => c.heartbeat === true)).toHaveLength(0)
+  expect(chunks.map(c => c.status)).toEqual(['prep:0', 'prep:5', 'prep:7'])
+})
+
+test('unparseable partial args still emit a heartbeat', () => {
+  const openai = new OpenAI({ apiKey: '123', toolCallHeartbeats: true })
+  openai.addPlugin(new Plugin2())
+
+  const context = { toolCalls: [] as any[] }
+  // consume the start chunk
+  void [...(openai as any).processToolCallChunk({ type: 'start', id: '1', name: 'plugin2', args: '' }, context)]
+
+  // a delta whose accumulated args cannot be parsed even as partial JSON —
+  // exactly the silent gap heartbeats exist to fill
+  const chunks: any[] = [...(openai as any).processToolCallChunk({ type: 'delta', id: '1', argumentsDelta: 'not-json' }, context)]
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]).toMatchObject({ type: 'tool', id: '1', name: 'plugin2', state: 'preparing', status: 'prep2', heartbeat: true, done: false })
+})
