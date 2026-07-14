@@ -154,6 +154,11 @@ export default class extends LlmEngine {
 
   getMaxTokens(model: string): number {
     if (model === 'computer-use') return this.getMaxTokens(this.getComputerUseRealModel())
+    // Claude 5 family (claude-sonnet-5, claude-fable-5, claude-mythos-5, …)
+    // supports 128k output; without a match these fell through to 4096,
+    // truncating large tool calls mid-arguments (stop_reason max_tokens)
+    if (/claude-[a-z]+-5\b/.test(model)) return 64000
+    if (model.includes('claude-haiku-4-5')) return 64000
     if (model.includes('claude-opus-4')) return 32000
     if (model.includes('claude-sonnet-4')) return 64000
     if (model.includes('claude-3-7-')) return 64000

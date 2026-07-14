@@ -108,6 +108,13 @@ test('Anthropic Basic', async () => {
 
 test('Anthropic max tokens', async () => {
   const anthropic = new Anthropic(config)
+  // Claude 5 family — without an explicit match these fell through to
+  // 4096, truncating large tool calls mid-arguments
+  expect(anthropic.getMaxTokens('claude-sonnet-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-fable-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-mythos-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-haiku-4-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-haiku-4-5-20251001')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-opus-4-latest')).toBe(32000)
   expect(anthropic.getMaxTokens('claude-sonnet-4-latest')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-3-7-sonnet-latest')).toBe(64000)
