@@ -165,6 +165,7 @@ export default class extends LlmEngine {
       ...(opts?.usage ? { usage: {
         prompt_tokens: response.usage.promptTokens ?? 0,
         completion_tokens: response.usage.completionTokens ?? 0,
+        context_window_tokens: response.usage.promptTokens ?? 0,
       } } : {}),
     }
   }
@@ -269,6 +270,7 @@ export default class extends LlmEngine {
     if (context.opts.usage && chunk.data.usage) {
       context.usage.prompt_tokens += chunk.data.usage.promptTokens ?? 0
       context.usage.completion_tokens += chunk.data.usage.completionTokens ?? 0
+      context.usage.context_window_tokens = chunk.data.usage.promptTokens ?? 0
     }
 
     // tool calls - normalize and process

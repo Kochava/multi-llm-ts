@@ -368,6 +368,8 @@ export type LlmUsage = {
   prompt_tokens_details?: {
     cached_tokens?: number
     cache_creation_tokens?: number
+    cache_creation_5m_tokens?: number
+    cache_creation_1h_tokens?: number
     audio_tokens?: number
   }
   completion_tokens_details?: {
