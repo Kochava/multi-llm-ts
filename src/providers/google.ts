@@ -721,8 +721,6 @@ export default class extends LlmEngine {
 
     // usage
     if (done && context.opts.usage) {
-      // context-window snapshot: gemini promptTokenCount already includes cache
-      context.requestUsage.context_window_tokens = context.requestUsage.prompt_tokens ?? 0
       context.usage = addUsages(context.usage, context.requestUsage)
       yield { type: 'usage', usage: context.usage }
     }
