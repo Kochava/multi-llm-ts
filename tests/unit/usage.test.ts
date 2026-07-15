@@ -11,6 +11,8 @@ test('Add usage with both null or undefined', () => {
     prompt_tokens_details: {
       cached_tokens: 0,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 0
     },
     completion_tokens_details: {
@@ -83,6 +85,8 @@ test('Add basic usage', () => {
     prompt_tokens_details: {
       cached_tokens: 0,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 0
     },
     completion_tokens_details: {
@@ -99,6 +103,8 @@ test('Add usage with prompt tokens details', () => {
     prompt_tokens_details: {
       cached_tokens: 5,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 2
     }
   }
@@ -109,6 +115,8 @@ test('Add usage with prompt tokens details', () => {
     prompt_tokens_details: {
       cached_tokens: 3,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 1
     }
   }
@@ -121,6 +129,8 @@ test('Add usage with prompt tokens details', () => {
     prompt_tokens_details: {
       cached_tokens: 8,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 3
     },
     completion_tokens_details: {
@@ -157,6 +167,8 @@ test('Add usage with completion tokens details', () => {
     prompt_tokens_details: {
       cached_tokens: 0,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 0
     },
     completion_tokens_details: {
@@ -173,6 +185,8 @@ test('Add usage with all details', () => {
     prompt_tokens_details: {
       cached_tokens: 5,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 2
     },
     completion_tokens_details: {
@@ -187,6 +201,8 @@ test('Add usage with all details', () => {
     prompt_tokens_details: {
       cached_tokens: 3,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 1
     },
     completion_tokens_details: {
@@ -203,6 +219,8 @@ test('Add usage with all details', () => {
     prompt_tokens_details: {
       cached_tokens: 8,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 3
     },
     completion_tokens_details: {
@@ -237,6 +255,8 @@ test('Add usage with partial details', () => {
     prompt_tokens_details: {
       cached_tokens: 5,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 0
     },
     completion_tokens_details: {
@@ -265,6 +285,8 @@ test('Add usage with zero values', () => {
     prompt_tokens_details: {
       cached_tokens: 0,
       cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
       audio_tokens: 0
     },
     completion_tokens_details: {

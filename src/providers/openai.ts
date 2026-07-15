@@ -591,7 +591,7 @@ export default class extends LlmEngine {
     }
 
     // usage
-    if (context.opts?.usage && context.done && context.usage) {
+    if (context.opts?.usage && context.done && chunk.usage && context.usage) {
       yield { type: 'usage', usage: context.usage }
     }
 

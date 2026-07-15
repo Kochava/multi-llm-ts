@@ -7,6 +7,8 @@ export const zeroUsage = (): LlmUsage => ({
   prompt_tokens_details: {
     cached_tokens: 0,
     cache_creation_tokens: 0,
+    cache_creation_5m_tokens: 0,
+    cache_creation_1h_tokens: 0,
     audio_tokens: 0
   },
   completion_tokens_details: {
@@ -38,6 +40,8 @@ export const addUsages = (usage1: LlmUsage|null|undefined, usage2: LlmUsage|null
     prompt_tokens_details: {
       cached_tokens: (usage1.prompt_tokens_details?.cached_tokens || 0) + (usage2.prompt_tokens_details?.cached_tokens || 0),
       cache_creation_tokens: (usage1.prompt_tokens_details?.cache_creation_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_tokens || 0),
+      cache_creation_5m_tokens: (usage1.prompt_tokens_details?.cache_creation_5m_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_5m_tokens || 0),
+      cache_creation_1h_tokens: (usage1.prompt_tokens_details?.cache_creation_1h_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_1h_tokens || 0),
       audio_tokens: (usage1.prompt_tokens_details?.audio_tokens || 0) + (usage2.prompt_tokens_details?.audio_tokens || 0)
     },
     completion_tokens_details: {

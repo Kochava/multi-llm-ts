@@ -489,6 +489,8 @@ test('OpenAI Responses API completion with tools', async () => {
       prompt_tokens_details: {
         cached_tokens: 0,
         cache_creation_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {
@@ -599,6 +601,8 @@ test('OpenAI Responses API stream without tools', async () => {
       prompt_tokens_details: {
         cached_tokens: 0,
         cache_creation_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {
@@ -711,6 +715,8 @@ test('OpenAI Responses API stream with tools', async () => {
       prompt_tokens_details: {
         cached_tokens: 0,
         cache_creation_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
         audio_tokens: 0
       },
       completion_tokens_details: {

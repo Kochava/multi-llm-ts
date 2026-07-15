@@ -301,6 +301,8 @@ export default class extends LlmEngine {
         if (completion.usage.prompt_tokens_details) {
           completion.usage.prompt_tokens_details.cached_tokens = (completion.usage.prompt_tokens_details.cached_tokens ?? 0) + (response.usage.cache_read_input_tokens ?? 0)
           completion.usage.prompt_tokens_details.cache_creation_tokens = (completion.usage.prompt_tokens_details.cache_creation_tokens ?? 0) + (response.usage.cache_creation_input_tokens ?? 0)
+          completion.usage.prompt_tokens_details.cache_creation_5m_tokens = (completion.usage.prompt_tokens_details.cache_creation_5m_tokens ?? 0) + ((response.usage as any).cache_creation?.ephemeral_5m_input_tokens ?? 0)
+          completion.usage.prompt_tokens_details.cache_creation_1h_tokens = (completion.usage.prompt_tokens_details.cache_creation_1h_tokens ?? 0) + ((response.usage as any).cache_creation?.ephemeral_1h_input_tokens ?? 0)
         }
       }
 
@@ -322,6 +324,8 @@ export default class extends LlmEngine {
         prompt_tokens_details: {
           cached_tokens: response.usage.cache_read_input_tokens ?? 0,
           cache_creation_tokens: response.usage.cache_creation_input_tokens ?? 0,
+          cache_creation_5m_tokens: (response.usage as any).cache_creation?.ephemeral_5m_input_tokens ?? 0,
+          cache_creation_1h_tokens: (response.usage as any).cache_creation?.ephemeral_1h_input_tokens ?? 0,
         },
       } } : {}),
     }
@@ -565,6 +569,10 @@ export default class extends LlmEngine {
       }
       if ('cache_creation_input_tokens' in usage && context.requestUsage.prompt_tokens_details?.cache_creation_tokens !== undefined) {
         context.requestUsage.prompt_tokens_details.cache_creation_tokens = (usage as Usage).cache_creation_input_tokens ?? 0
+      }
+      if ('cache_creation' in usage && context.requestUsage.prompt_tokens_details) {
+        context.requestUsage.prompt_tokens_details.cache_creation_5m_tokens = (usage as any).cache_creation?.ephemeral_5m_input_tokens ?? 0
+        context.requestUsage.prompt_tokens_details.cache_creation_1h_tokens = (usage as any).cache_creation?.ephemeral_1h_input_tokens ?? 0
       }
       context.requestUsage.context_window_tokens = (context.requestUsage.prompt_tokens ?? 0) + (context.requestUsage.prompt_tokens_details?.cached_tokens ?? 0) + (context.requestUsage.prompt_tokens_details?.cache_creation_tokens ?? 0)
       context.requestUsage.completion_tokens = usage.output_tokens ?? 0

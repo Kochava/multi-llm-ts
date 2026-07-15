@@ -288,6 +288,7 @@ export default class extends LlmEngine {
       ...(opts?.usage ?  { usage: {
         prompt_tokens: response.prompt_eval_count,
         completion_tokens: response.eval_count,
+        context_window_tokens: response.prompt_eval_count ?? 0,
       } } : {}),
       ...(opts?.logprobs && response.logprobs ?  { logprobs: response.logprobs } : {})
     }
@@ -429,6 +430,7 @@ export default class extends LlmEngine {
     if (chunk.done && (chunk.eval_count || chunk.prompt_eval_count)) {
       context.usage.prompt_tokens += chunk.prompt_eval_count ?? 0
       context.usage.completion_tokens += chunk.eval_count ?? 0
+      context.usage.context_window_tokens = chunk.prompt_eval_count ?? 0
     }
 
     // tool calls
