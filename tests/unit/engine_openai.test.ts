@@ -305,6 +305,60 @@ test('OpenAI processNativeChunk Text', async () => {
   }
 })
 
+test('OpenAI processNativeChunk emits accumulated usage when the terminal chunk omits usage', async () => {
+  const openai = new OpenAI(config)
+  const context: OpenAIStreamingContext = {
+    model: openai.buildModel('model'),
+    thread: [],
+    opts: { usage: true },
+    toolCalls: [],
+    toolHistory: [],
+    currentRound: 0,
+    responsesApi: false,
+    reasoningContent: '',
+    usage: { prompt_tokens: 0, completion_tokens: 0 },
+    thinking: false,
+  }
+  const usageChunk: ChatCompletionChunk = {
+    id: 'usage',
+    created: 1,
+    model: 'model',
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: {}, finish_reason: null }],
+    usage: {
+      prompt_tokens: 80,
+      completion_tokens: 10,
+      total_tokens: 90,
+    },
+  }
+  const terminalChunk: ChatCompletionChunk = {
+    id: 'terminal',
+    created: 1,
+    model: 'model',
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+  }
+
+  const beforeTerminal: LlmChunk[] = []
+  for await (const chunk of openai.processNativeChunk(usageChunk, context)) {
+    beforeTerminal.push(chunk)
+  }
+  expect(beforeTerminal).toStrictEqual([])
+
+  const terminal: LlmChunk[] = []
+  for await (const chunk of openai.processNativeChunk(terminalChunk, context)) {
+    terminal.push(chunk)
+  }
+  expect(terminal).toContainEqual({
+    type: 'usage',
+    usage: {
+      prompt_tokens: 80,
+      completion_tokens: 10,
+      context_window_tokens: 80,
+    },
+  })
+})
+
 test('OpenAI stream', async () => {
   const openai = new OpenAI(config)
   openai.addPlugin(new Plugin1())
