@@ -362,8 +362,15 @@ export type LlmTool = PluginTool | LlmToolOpenAI
 export type LlmUsage = {
   prompt_tokens: number
   completion_tokens: number
+  /** total input tokens (including cache reads/writes) of the most recent
+   * underlying API request — a point-in-time context-window snapshot, unlike
+   * prompt_tokens which accumulates across tool-call round-trips */
+  context_window_tokens?: number
   prompt_tokens_details?: {
     cached_tokens?: number
+    cache_creation_tokens?: number
+    cache_creation_5m_tokens?: number
+    cache_creation_1h_tokens?: number
     audio_tokens?: number
   }
   completion_tokens_details?: {
