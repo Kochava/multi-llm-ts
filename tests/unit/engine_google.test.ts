@@ -85,10 +85,10 @@ beforeEach(() => {
 test('Google Load Models', async () => {
   const models = await loadGoogleModels(config)
   expect(models!.chat).toStrictEqual([
+    { id: 'gemini-pro-latest', name: 'Gemini Pro Latest', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: false } },
     { id: 'gemini-1.5-latest', name: 'Gemini 1.5', meta: expect.any(Object), capabilities: { tools: true, vision: false, reasoning: false, caching: false } },
     //{ id: 'gemini-1.5', name: 'Gemini 1.5', meta: expect.any(Object), capabilities: { tools: true, vision: false, reasoning: false, caching: false } },
     { id: 'gemma-model', name: 'Gemma Model', meta: expect.any(Object), capabilities: { tools: false, vision: false, reasoning: false, caching: false } },
-    { id: 'gemini-pro-latest', name: 'Gemini Pro Latest', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: false } },
   ])
   expect(models!.image).toStrictEqual([
     { id: 'image-model', name: 'Image Model', meta: expect.any(Object), capabilities: { tools: true, vision: false, reasoning: false, caching: false } },

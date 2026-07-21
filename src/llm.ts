@@ -278,6 +278,9 @@ export const loadGoogleModels = async (engineConfig: EngineCreateOpts, computerI
       if (a.id.includes('gemini') && !b.id.includes('gemini')) {
         return -1
       }
+      if (!a.id.includes('gemini') && b.id.includes('gemini')) {
+        return 1
+      }
       return b.name.localeCompare(a.name)
     })
 

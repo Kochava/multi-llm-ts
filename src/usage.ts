@@ -6,6 +6,9 @@ export const zeroUsage = (): LlmUsage => ({
   completion_tokens: 0,
   prompt_tokens_details: {
     cached_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_creation_5m_tokens: 0,
+    cache_creation_1h_tokens: 0,
     audio_tokens: 0
   },
   completion_tokens_details: {
@@ -31,8 +34,14 @@ export const addUsages = (usage1: LlmUsage|null|undefined, usage2: LlmUsage|null
   return {
     prompt_tokens: usage1.prompt_tokens + usage2.prompt_tokens,
     completion_tokens: usage1.completion_tokens + usage2.completion_tokens,
+    // context_window_tokens is a point-in-time snapshot of the latest request,
+    // not a cumulative counter: the most recent value wins
+    ...((usage2.context_window_tokens ?? usage1.context_window_tokens) !== undefined ? { context_window_tokens: usage2.context_window_tokens ?? usage1.context_window_tokens } : {}),
     prompt_tokens_details: {
       cached_tokens: (usage1.prompt_tokens_details?.cached_tokens || 0) + (usage2.prompt_tokens_details?.cached_tokens || 0),
+      cache_creation_tokens: (usage1.prompt_tokens_details?.cache_creation_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_tokens || 0),
+      cache_creation_5m_tokens: (usage1.prompt_tokens_details?.cache_creation_5m_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_5m_tokens || 0),
+      cache_creation_1h_tokens: (usage1.prompt_tokens_details?.cache_creation_1h_tokens || 0) + (usage2.prompt_tokens_details?.cache_creation_1h_tokens || 0),
       audio_tokens: (usage1.prompt_tokens_details?.audio_tokens || 0) + (usage2.prompt_tokens_details?.audio_tokens || 0)
     },
     completion_tokens_details: {
