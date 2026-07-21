@@ -582,19 +582,34 @@ export default abstract class LlmEngine {
           }
         }
         const partialArgs = this.parsePartialToolArgs(currentTool.args)
+        let statusYielded = false
         if (partialArgs !== undefined) {
           const status = this.getToolPreparationDescription(currentTool.function, partialArgs)
-          if (status === this.toolPreparationStatuses.get(currentTool)) {
-            return
+          if (status !== this.toolPreparationStatuses.get(currentTool)) {
+            this.toolPreparationStatuses.set(currentTool, status)
+            statusYielded = true
+            yield {
+              type: 'tool',
+              id: currentTool.id,
+              name: currentTool.function,
+              state: 'preparing',
+              status,
+              ...(currentTool.thoughtSignature ? { thoughtSignature: currentTool.thoughtSignature } : {}),
+              done: false
+            } as LlmChunk
           }
-          this.toolPreparationStatuses.set(currentTool, status)
+        }
+        // when enabled, deltas that produced no status update still emit a
+        // marked heartbeat chunk so consumers can distinguish a healthy
+        // long tool-argument stream from a dead connection
+        if (this.config.toolCallHeartbeats && !statusYielded) {
           yield {
             type: 'tool',
             id: currentTool.id,
             name: currentTool.function,
             state: 'preparing',
-            status,
-            ...(currentTool.thoughtSignature ? { thoughtSignature: currentTool.thoughtSignature } : {}),
+            status: this.toolPreparationStatuses.get(currentTool) ?? this.getToolPreparationDescription(currentTool.function),
+            heartbeat: true,
             done: false
           } as LlmChunk
         }

@@ -970,6 +970,41 @@ test('OpenAI Responses API stream emits preparing updates with partial tool args
   }))
 })
 
+test('OpenAI Responses API stream emits heartbeats for argument deltas when enabled', async () => {
+
+  const openai = new OpenAI({ ...config, toolCallHeartbeats: true })
+  openai.addPlugin(new Plugin2())
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-4'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], {
+    useResponsesApi: true,
+  })
+
+  const toolCalls: LlmChunk[] = []
+  for await (const chunk of stream) {
+    if (chunk.type === 'tool') {
+      toolCalls.push(chunk)
+    }
+  }
+
+  // Plugin2's preparation description is constant, so no delta produces a
+  // status update: every argument delta must emit a marked heartbeat
+  // (the harness streams '["arg"]' one character at a time = 7 deltas)
+  const heartbeats = toolCalls.filter((chunk: any) => chunk.heartbeat === true)
+  expect(heartbeats).toHaveLength(7)
+  for (const heartbeat of heartbeats) {
+    expect(heartbeat).toMatchObject({ type: 'tool', id: 'func_call_123', name: 'plugin2', state: 'preparing', status: 'prep2', done: false })
+  }
+
+  // the regular chunk sequence is unchanged around them
+  const regular = toolCalls.filter((chunk: any) => chunk.heartbeat !== true)
+  expect(regular).toContainEqual(expect.objectContaining({ state: 'preparing', status: 'prep2', done: false }))
+  expect(regular).toContainEqual(expect.objectContaining({ state: 'running', done: false }))
+  expect(regular).toContainEqual(expect.objectContaining({ state: 'completed', done: true }))
+})
+
 test('OpenAI Responses API forced usage', async () => {
   const openai = new OpenAI(config)
   

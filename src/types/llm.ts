@@ -298,6 +298,11 @@ export type LlmChunkTool = {
   }
   thoughtSignature?: string
   reasoningDetails?: any
+  // progress-only signal emitted per argument delta while a tool call is
+  // being prepared (see EngineCreateOpts.toolCallHeartbeats); lets
+  // consumers detect a stalled stream without treating the chunk as a
+  // state change
+  heartbeat?: boolean
   done: boolean
 }
 

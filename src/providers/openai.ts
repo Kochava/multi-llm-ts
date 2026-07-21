@@ -1119,12 +1119,14 @@ export default class extends LlmEngine {
               const call = pendingCalls.find(c => c.id == ev.item_id)
               if (call) {
                 call.arguments += ev.delta
+                let statusYielded = false
                 const partialArgs = this.parsePartialToolArgs(call.arguments)
+                const preparationStatusKey = call.id || call.call_id || ''
                 if (partialArgs !== undefined) {
                   const status = this.getToolPreparationDescription(call.name, partialArgs)
-                  const preparationStatusKey = call.id || call.call_id || ''
                   if (status !== preparationStatuses[preparationStatusKey]) {
                     preparationStatuses[preparationStatusKey] = status
+                    statusYielded = true
                     yield {
                       type: 'tool',
                       id: call.id,
@@ -1133,6 +1135,20 @@ export default class extends LlmEngine {
                       status,
                       done: false
                     }
+                  }
+                }
+                // when enabled, deltas that produced no status update still
+                // emit a marked heartbeat chunk so consumers can distinguish
+                // a healthy long tool-argument stream from a dead connection
+                if (this.config.toolCallHeartbeats && !statusYielded) {
+                  yield {
+                    type: 'tool',
+                    id: call.id,
+                    name: call.name,
+                    state: 'preparing',
+                    status: preparationStatuses[preparationStatusKey] ?? this.getToolPreparationDescription(call.name),
+                    heartbeat: true,
+                    done: false
                   }
                 }
               }

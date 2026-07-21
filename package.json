@@ -18,6 +18,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsup",
+    "prepare": "npm run build",
     "lint": "eslint '**/*.ts'",
     "ollama": "node ./tools/update_ollama_models.js",
     "dist": "npm run lint && npx vitest --run && npm run build",
