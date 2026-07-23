@@ -10,6 +10,7 @@ import { GenerateContentResponse, FinishReason } from '@google/genai'
 import * as _Google from '@google/genai'
 import { LlmChunk, LlmChunkContent } from '../../src/types/llm'
 import { z } from 'zod'
+import { zeroUsage } from '../../src/usage'
 
 Plugin1.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result1'))
 Plugin2.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result2'))
@@ -154,6 +155,63 @@ test('Google completion', async () => {
     type: 'text',
     content: 'response',
     toolCalls: [],
+  })
+})
+
+test('Google completion includes tool-use prompt tokens in the context snapshot', async () => {
+  vi.mocked(_Google.GoogleGenAI.prototype.models.generateContent).mockResolvedValueOnce({
+    text: 'response',
+    functionCalls: [],
+    usageMetadata: {
+      promptTokenCount: 100,
+      toolUsePromptTokenCount: 20,
+      candidatesTokenCount: 5,
+    },
+  } as GenerateContentResponse)
+
+  const google = new Google(config)
+  const response = await google.complete(google.buildModel('gemma'), [
+    new Message('user', 'prompt'),
+  ], { usage: true })
+
+  expect(response.usage).toMatchObject({
+    prompt_tokens: 120,
+    context_window_tokens: 120,
+  })
+})
+
+test('Google streaming includes tool-use prompt tokens in the context snapshot', async () => {
+  const google = new Google(config)
+  const context: GoogleStreamingContext = {
+    model: google.buildModel('model'),
+    thread: [],
+    opts: { usage: true },
+    toolCalls: [],
+    toolHistory: [],
+    currentRound: 0,
+    requestUsage: zeroUsage(),
+    usage: zeroUsage(),
+  } as GoogleStreamingContext
+  const chunk = {
+    candidates: [{ finishReason: 'STOP', content: { parts: [] } }],
+    usageMetadata: {
+      promptTokenCount: 100,
+      toolUsePromptTokenCount: 20,
+      candidatesTokenCount: 5,
+    },
+  } as unknown as GenerateContentResponse
+
+  const chunks: LlmChunk[] = []
+  for await (const result of google.processNativeChunk(chunk, context)) {
+    chunks.push(result)
+  }
+
+  expect(chunks.at(-1)).toMatchObject({
+    type: 'usage',
+    usage: {
+      prompt_tokens: 120,
+      context_window_tokens: 120,
+    },
   })
 })
 

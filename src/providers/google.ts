@@ -256,7 +256,7 @@ export default class extends LlmEngine {
       ...(opts?.usage && response.usageMetadata ? { usage: {
         prompt_tokens: (response.usageMetadata.promptTokenCount ?? 0) + (response.usageMetadata.toolUsePromptTokenCount ?? 0),
         completion_tokens: (response.usageMetadata.candidatesTokenCount ?? 0) + (response.usageMetadata.thoughtsTokenCount ?? 0),
-        context_window_tokens: response.usageMetadata.promptTokenCount ?? 0,
+        context_window_tokens: (response.usageMetadata.promptTokenCount ?? 0) + (response.usageMetadata.toolUsePromptTokenCount ?? 0),
         prompt_tokens_details: {
           cached_tokens: response.usageMetadata.cachedContentTokenCount ?? 0,
         },
@@ -613,7 +613,7 @@ export default class extends LlmEngine {
     // usage
     if (chunk.usageMetadata) {
       context.requestUsage.prompt_tokens = (chunk.usageMetadata.promptTokenCount ?? 0) + (chunk.usageMetadata.toolUsePromptTokenCount ?? 0)
-      context.requestUsage.context_window_tokens = chunk.usageMetadata.promptTokenCount ?? 0
+      context.requestUsage.context_window_tokens = (chunk.usageMetadata.promptTokenCount ?? 0) + (chunk.usageMetadata.toolUsePromptTokenCount ?? 0)
       context.requestUsage.prompt_tokens_details!.cached_tokens = chunk.usageMetadata.cachedContentTokenCount ?? 0
       context.requestUsage.completion_tokens = (chunk.usageMetadata.candidatesTokenCount ?? 0) + (chunk.usageMetadata.thoughtsTokenCount ?? 0)
       context.requestUsage.completion_tokens_details!.reasoning_tokens! = chunk.usageMetadata.thoughtsTokenCount ?? 0

@@ -39,6 +39,7 @@ export type OpenAIStreamingContext = LlmStreamingContext<ChatCompletionMessagePa
   responsesApi: boolean
   thinking: boolean
   done?: boolean
+  hasUsage?: boolean
 }
 
 export default class extends LlmEngine {
@@ -485,6 +486,7 @@ export default class extends LlmEngine {
       this.accumulateUsage(context.usage, chunk.usage)
       // context-window snapshot of the latest request (cache already included)
       context.usage.context_window_tokens = chunk.usage.prompt_tokens ?? 0
+      context.hasUsage = true
     }
 
     // tool calls - normalize and process
@@ -591,7 +593,7 @@ export default class extends LlmEngine {
     }
 
     // usage
-    if (context.opts?.usage && context.done && chunk.usage && context.usage) {
+    if (context.opts?.usage && context.done && context.hasUsage && context.usage) {
       yield { type: 'usage', usage: context.usage }
     }
 
