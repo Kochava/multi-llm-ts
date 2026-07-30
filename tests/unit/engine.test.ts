@@ -287,6 +287,30 @@ test('Switch to vision when model provided', async () => {
   }, {})
 })
 
+test('Complete switches to vision when model provided', async () => {
+  const openai = new OpenAI(config)
+  const messages = [
+    new Message('system', 'instructions'),
+    new Message('user', 'prompt1'),
+  ]
+  messages[1].attach(new Attachment('image', 'image/png'))
+
+  await openai.complete(openai.buildModel('model-no-tool'), messages, {
+    visionFallbackModel: openai.buildModel('model-vision'),
+  })
+
+  expect(_openai.default.prototype.chat.completions.create).toHaveBeenCalledWith({
+    model: 'model-vision',
+    messages: [
+      { role: 'system', content: 'instructions' },
+      { role: 'user', content: [
+        { type: 'text', text: 'prompt1' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,image' } },
+      ]}
+    ]
+  }, {})
+})
+
 test('Cannot switch to vision if not models provided', async () => {
   const openai = new OpenAI(config)
   const messages = [

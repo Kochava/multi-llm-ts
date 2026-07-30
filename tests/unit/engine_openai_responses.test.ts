@@ -2,11 +2,13 @@ import { LlmChunk, LlmChunkContent } from '../../src/types/llm'
 import { vi, beforeEach, expect, test, Mock } from 'vitest'
 import { Plugin2, PluginPartialPreparation } from '../mocks/plugins'
 import Message from '../../src/models/message'
+import Attachment from '../../src/models/attachment'
 import OpenAI from '../../src/providers/openai'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
 import { Plugin } from '../../src/plugin'
 import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
+import { z } from 'zod'
 
 Plugin2.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result2'))
 
@@ -290,6 +292,115 @@ test('OpenAI Responses API completion without tools', async () => {
   })
 })
 
+test('OpenAI Responses API forwards generation and request options', async () => {
+  const openai = new OpenAI(config)
+  const controller = new AbortController()
+
+  await openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], {
+    useResponsesApi: true,
+    tools: false,
+    maxTokens: 123,
+    temperature: 0,
+    top_p: 0.8,
+    serviceTier: 'priority',
+    structuredOutput: {
+      name: 'answer',
+      structure: z.object({ answer: z.string() }),
+    },
+    customOpts: { store: false },
+    timeout: 5000,
+    abortSignal: controller.signal,
+  })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: 'gpt-4',
+      max_output_tokens: 123,
+      temperature: 0,
+      top_p: 0.8,
+      service_tier: 'priority',
+      store: false,
+      text: {
+        format: expect.objectContaining({
+          type: 'json_schema',
+          name: 'answer',
+          strict: true,
+        }),
+      },
+    }),
+    { timeout: 5000, signal: controller.signal },
+  )
+})
+
+test('OpenAI Responses API rejects failed non-streaming responses', async () => {
+  ;(_openai.default.prototype.responses.create as Mock).mockResolvedValueOnce({
+    id: 'resp_failed',
+    status: 'failed',
+    error: { code: 'server_error', message: 'generation failed' },
+    incomplete_details: null,
+    output: [],
+  })
+
+  const openai = new OpenAI(config)
+  await expect(openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], { useResponsesApi: true, tools: false })).rejects.toThrow(
+    'Responses API failed (server_error): generation failed',
+  )
+})
+
+test('OpenAI Responses API streaming uses the vision fallback model', async () => {
+  const openai = new OpenAI(config)
+  const message = new Message('user', 'describe this')
+  message.attach(new Attachment('image', 'image/png'))
+
+  await openai.stream(openai.buildModel('model-no-tool'), [message], {
+    useResponsesApi: true,
+    tools: false,
+    visionFallbackModel: openai.buildModel('model-vision'),
+  })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith({
+    model: 'model-vision',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'describe this' },
+        { type: 'input_image', detail: 'auto', image_url: 'data:image/png;base64,image' },
+      ],
+    }],
+    stream: true,
+  })
+})
+
+test('OpenAI Responses API surfaces streaming errors', async () => {
+  ;(_openai.default.prototype.responses.create as Mock).mockResolvedValueOnce({
+    async * [Symbol.asyncIterator]() {
+      yield {
+        type: 'error',
+        code: 'server_error',
+        message: 'stream failed',
+        param: null,
+        sequence_number: 1,
+      }
+    },
+  })
+
+  const openai = new OpenAI(config)
+  const consume = async () => {
+    for await (const chunk of openai.generate(openai.buildModel('gpt-4'), [
+      new Message('user', 'prompt'),
+    ], { useResponsesApi: true, tools: false })) {
+      void chunk
+    }
+  }
+
+  await expect(consume()).rejects.toThrow('Responses API error (server_error): stream failed')
+})
+
 test('OpenAI internal web search enables Responses API from config', async () => {
   callCount = 1
   const openai = new OpenAI({
@@ -403,6 +514,37 @@ test('OpenAI Responses API responseId continuation does not replay prior tool ca
     previous_response_id: 'resp_previous',
     input: 'what did you create?',
     stream: false,
+  })
+})
+
+test('OpenAI continueResponse returns text and response metadata', async () => {
+  callCount = 1
+  const openai = new OpenAI(config)
+
+  const response = await openai.continueResponse(
+    openai.buildModel('gpt-4'),
+    'resp_previous',
+    'continue',
+    { tools: false, usage: true },
+  )
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith({
+    model: 'gpt-4',
+    previous_response_id: 'resp_previous',
+    input: [{ type: 'message', role: 'user', content: 'continue' }],
+    stream: false,
+  })
+  expect(response).toStrictEqual({
+    type: 'text',
+    content: 'response text',
+    toolCalls: [],
+    openAIResponseId: 'resp_123',
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 20,
+      prompt_tokens_details: { cached_tokens: 0, audio_tokens: 0 },
+      completion_tokens_details: { reasoning_tokens: 0, audio_tokens: 0 },
+    },
   })
 })
 

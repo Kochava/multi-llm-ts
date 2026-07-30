@@ -132,7 +132,7 @@ export default abstract class LlmEngine {
   }
 
   async complete(model: ChatModel|string, thread: Message[], opts?: LlmCompletionOpts): Promise<LlmResponse> {
-    const chatModel = this.toModel(model)
+    const chatModel = this.selectModel(this.toModel(model), thread, opts)
     const messages = this.buildPayload(chatModel, thread, opts)
     return await this.chat(chatModel, messages, opts)
   }

@@ -1,6 +1,6 @@
 import { minimatch } from 'minimatch'
 import OpenAI, { ClientOptions } from 'openai'
-import { zodResponseFormat } from 'openai/helpers/zod'
+import { zodResponseFormat, zodTextFormat } from 'openai/helpers/zod'
 import { CompletionUsage } from 'openai/resources'
 import { ChatCompletionChunk, ChatCompletionCreateParamsBase, ChatCompletionMessageFunctionToolCall, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Response, ResponseCreateParams, ResponseFunctionToolCall, ResponseInputItem, ResponseOutputMessage, ResponseStreamEvent, ResponseUsage, Tool, ToolChoiceFunction, ToolChoiceOptions } from 'openai/resources/responses/responses'
@@ -343,6 +343,10 @@ export default class extends LlmEngine {
 
   async stream(model: ChatModel, thread: Message[], opts?: LlmCompletionOpts): Promise<LlmStreamingResponse<OpenAIStreamingContext>> {
 
+    // Select the model before choosing an API, so Responses requests receive the
+    // same vision fallback behavior as Chat Completions requests.
+    model = this.selectModel(model, thread, opts)
+
     // process with responses api?
     if (this.shouldUseResponsesApi(model, opts)) {
       return this.responsesStream(model, thread, opts)
@@ -351,8 +355,6 @@ export default class extends LlmEngine {
     // set baseURL on client
     this.setBaseURL()
 
-    // model: switch to vision if needed
-    model = this.selectModel(model, thread, opts)
     const context: OpenAIStreamingContext = {
       model: model,
       responsesApi: false,
@@ -425,6 +427,7 @@ export default class extends LlmEngine {
   getRequestOptions(model: ChatModel, opts?: LlmCompletionOpts): RequestOptions {
     return {
       ...(opts?.timeout ? { timeout: opts?.timeout } : {}),
+      ...(opts?.abortSignal ? { signal: opts.abortSignal } : {}),
     }
   }
 
@@ -650,10 +653,12 @@ export default class extends LlmEngine {
     logger.debug('[responses] REQUEST', JSON.stringify(request, null, 2))
 
     // call
-    let response: Response = await this.client.responses.create(request) as Response
+    let response: Response = await this.createResponse(request, model, opts) as Response
 
     // we can loop several times calling tools
     while (true) {
+
+      this.assertResponseSucceeded(response)
 
       // update responseId tracking
       logger.debug('[responses] RESPONSE', response)
@@ -664,14 +669,7 @@ export default class extends LlmEngine {
       }
 
       // concatenate text from the output array
-      const messages = response.output.filter((o: any) => o.type === 'message') as ResponseOutputMessage[]
-      for (const message of messages) {
-        for (const content of message.content) {
-          if (content.type === 'output_text') {
-            text += content.text || ''
-          }
-        }
-      }
+      text += this.getResponsesText(response)
       
       // check if we have tool calls
       const toolCalls = response.output?.filter((o: any) => o.type === 'function_call') as ResponseFunctionToolCall[]
@@ -748,6 +746,7 @@ export default class extends LlmEngine {
 
         // build follow-up request
         const followUpReq: ResponseCreateParams = {
+          ...this.getResponsesCompletionOpts(model, opts),
           model: model.id,
           previous_response_id: response.id,
           input: followReqInput,
@@ -759,7 +758,7 @@ export default class extends LlmEngine {
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
 
         // continue
-        response = await this.client.responses.create(followUpReq)
+        response = await this.createResponse(followUpReq, model, opts) as Response
         continue
       }
 
@@ -780,7 +779,7 @@ export default class extends LlmEngine {
     logger.log(`[${this.getName()}] prompting model ${model.id}`)
 
     const request = await this.buildResponsesRequestFromMessages(model, thread, opts, true)
-    const stream = await this.client.responses.create(request) as AsyncIterable<ResponseStreamEvent>
+    const stream = await this.createResponse(request, model, opts) as AsyncIterable<ResponseStreamEvent>
     logger.debug('[responsesStream] subscribed')
 
     const context: OpenAIStreamingContext = {
@@ -1060,6 +1059,14 @@ export default class extends LlmEngine {
               break
             }
 
+            case 'error':
+              throw new Error(`[openai] Responses API error${ev.code ? ` (${ev.code})` : ''}: ${ev.message}`)
+
+            case 'response.failed':
+            case 'response.incomplete':
+              this.assertResponseSucceeded(ev.response)
+              break
+
             case 'response.output_item.added':
               switch (ev.item.type) {
                 
@@ -1117,6 +1124,18 @@ export default class extends LlmEngine {
               if (ev.delta) {
                 yield {
                   type: thinking ? 'reasoning' : 'content',
+                  text: ev.delta,
+                  done: false
+                }
+              }
+              break
+            }
+
+            case 'response.reasoning_summary_text.delta':
+            case 'response.reasoning_text.delta': {
+              if (ev.delta) {
+                yield {
+                  type: 'reasoning',
                   text: ev.delta,
                   done: false
                 }
@@ -1211,6 +1230,7 @@ export default class extends LlmEngine {
 
         // now we can build the follow-up request
         const followReq: ResponseCreateParams = {
+          ...this.getResponsesCompletionOpts(model, opts),
           model: model.id,
           previous_response_id: responseId,
           input: followReqInput,
@@ -1222,7 +1242,7 @@ export default class extends LlmEngine {
         logger.debug('[responsesStream] FOLLOW-UP STREAM REQ', JSON.stringify(followReq, null, 2))
 
         // switch stream
-        currentStream = await this.client.responses.create(followReq) as AsyncIterable<ResponseStreamEvent>
+        currentStream = await this.createResponse(followReq, model, opts) as AsyncIterable<ResponseStreamEvent>
 
       }
 
@@ -1376,12 +1396,10 @@ export default class extends LlmEngine {
     }
 
     const req: ResponseCreateParams = {
+      ...this.getResponsesCompletionOpts(model, opts),
       model: model.id,
       ...(instructions ? { instructions } : {}),
       ...(opts?.responseId ? { previous_response_id: opts.responseId } : {}),
-      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort
-        ? { reasoning: { effort: opts.reasoningEffort } }
-        : {}),
       input,
       stream,
     // The installed OpenAI SDK type may lag the Responses API's supported
@@ -1392,6 +1410,42 @@ export default class extends LlmEngine {
 
     // done
     return req
+  }
+
+  private getResponsesCompletionOpts(model: ChatModel, opts?: LlmCompletionOpts): Partial<ResponseCreateParams> {
+    const text = {
+      ...(this.modelSupportsStructuredOutput(model) && opts?.structuredOutput ? {
+        format: zodTextFormat(opts.structuredOutput.structure, opts.structuredOutput.name),
+      } : {}),
+      ...(this.modelSupportsVerbosity(model) && opts?.verbosity ? { verbosity: opts.verbosity } : {}),
+    }
+
+    return {
+      ...(this.modelSupportsMaxTokens(model) && opts?.maxTokens !== undefined ? { max_output_tokens: opts.maxTokens } : {}),
+      ...(this.modelSupportsTemperature(model) && opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      ...(this.modelSupportsTopP(model) && opts?.top_p !== undefined ? { top_p: opts.top_p } : {}),
+      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort ? { reasoning: { effort: opts.reasoningEffort } } : {}),
+      ...(Object.keys(text).length ? { text } : {}),
+      ...(this.supportsServiceTiering() && opts?.serviceTier ? { service_tier: opts.serviceTier } : {}),
+      ...(opts?.customOpts || {}),
+    } as Partial<ResponseCreateParams>
+  }
+
+  private createResponse(request: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): Promise<unknown> {
+    const requestOptions = this.getRequestOptions(model, opts)
+    return Object.keys(requestOptions).length
+      ? this.client.responses.create(request, requestOptions)
+      : this.client.responses.create(request)
+  }
+
+  private assertResponseSucceeded(response: Response): void {
+    if (response.status === 'failed') {
+      const detail = response.error
+      throw new Error(`[openai] Responses API failed${detail?.code ? ` (${detail.code})` : ''}: ${detail?.message || 'Unknown error'}`)
+    }
+    if (response.status === 'incomplete') {
+      throw new Error(`[openai] Responses API response incomplete: ${response.incomplete_details?.reason || 'unknown reason'}`)
+    }
   }
 
   private async attachResponsesTools(req: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): Promise<void> {
@@ -1639,20 +1693,28 @@ export default class extends LlmEngine {
   }
 
   async continueResponse(model: ChatModel, previousId: string, input: string, opts?: LlmCompletionOpts): Promise<LlmResponse> {
-    const req: any = {
+    const req: ResponseCreateParams = {
+      ...this.getResponsesCompletionOpts(model, opts),
       model: model.id,
       input: [{ type: 'message', role: 'user', content: input }],
       previous_response_id: previousId,
       stream: false,
     }
-    const toolOpts = await this.getToolsOpts(model, opts)
-    if ((toolOpts as any).tools) req.tools = (toolOpts as any).tools
+    await this.attachResponsesTools(req, model, opts)
 
-    const resp: any = await (this.client as any).responses.create(req)
+    const resp = await this.createResponse(req, model, opts) as Response
+    this.assertResponseSucceeded(resp)
+
+    const usage = zeroUsage()
+    if (opts?.usage && resp.usage) {
+      this.accumulateResponsesUsage(usage, resp.usage)
+    }
     return {
       type: 'text',
-      content: (resp.output?.text) ?? '',
-      ...(opts?.usage && resp.usage ? { usage: resp.usage } : {}),
+      content: this.getResponsesText(resp),
+      toolCalls: [],
+      openAIResponseId: resp.id,
+      ...(opts?.usage ? { usage } : {}),
     }
   }
 
@@ -1661,11 +1723,23 @@ export default class extends LlmEngine {
     return await this.continueResponse(model, previousId, input, opts)
   }
 
+  private getResponsesText(response: Response): string {
+    if (response.output_text) {
+      return response.output_text
+    }
+
+    const messages = response.output?.filter((item): item is ResponseOutputMessage => item.type === 'message') || []
+    return messages.flatMap(message => message.content)
+      .filter(content => content.type === 'output_text')
+      .map(content => content.text || '')
+      .join('')
+  }
+
   private accumulateResponsesUsage(cumulate: LlmUsage, usage: ResponseUsage) {
     cumulate.prompt_tokens += usage.input_tokens
     cumulate.completion_tokens += usage.output_tokens
-    cumulate.prompt_tokens_details!.cached_tokens! += usage.input_tokens_details.cached_tokens
-    cumulate.completion_tokens_details!.reasoning_tokens! += usage.output_tokens_details.reasoning_tokens
+    cumulate.prompt_tokens_details!.cached_tokens! += usage.input_tokens_details?.cached_tokens || 0
+    cumulate.completion_tokens_details!.reasoning_tokens! += usage.output_tokens_details?.reasoning_tokens || 0
   }
 
 }
