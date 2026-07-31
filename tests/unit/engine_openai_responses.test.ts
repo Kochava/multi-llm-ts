@@ -1076,3 +1076,65 @@ test('OpenAI Responses API multiple system messages', async () => {
     stream: false
   })
 })
+
+test('gpt-5.6 routes to the Responses API without an explicit opt-in', async () => {
+  const openai = new OpenAI(config)
+
+  // no useResponsesApi: the model itself must force the Responses path, because
+  // chat/completions rejects function tools combined with a reasoning effort.
+  // the openai mock only implements responses.create, so a chat/completions
+  // call would throw rather than silently pass
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ model: 'gpt-5.6-luna' })
+  )
+})
+
+test('Responses request carries the reasoning effort', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-sol'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'high' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ reasoning: { effort: 'high' } })
+  )
+})
+
+test('Responses request carries efforts the SDK type does not know yet', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-sol'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'xhigh' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ reasoning: { effort: 'xhigh' } })
+  )
+})
+
+test('Responses request omits reasoning when no effort is set', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], {})
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req).not.toHaveProperty('reasoning')
+})
+
+test('Responses request omits reasoning for a non-reasoning model', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], { useResponsesApi: true, reasoningEffort: 'high' })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req).not.toHaveProperty('reasoning')
+})
