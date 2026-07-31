@@ -1,7 +1,7 @@
 import { minimatch } from 'minimatch'
 import OpenAI, { ClientOptions } from 'openai'
 import { zodResponseFormat } from 'openai/helpers/zod'
-import { CompletionUsage } from 'openai/resources'
+import { CompletionUsage, ReasoningEffort } from 'openai/resources'
 import { ChatCompletionChunk, ChatCompletionCreateParamsBase, ChatCompletionMessageFunctionToolCall, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Response, ResponseCreateParams, ResponseFunctionToolCall, ResponseInputItem, ResponseOutputMessage, ResponseStreamEvent, ResponseUsage, Tool, ToolChoiceFunction, ToolChoiceOptions } from 'openai/resources/responses/responses'
 import LlmEngine from '../engine'
@@ -117,8 +117,11 @@ export default class extends LlmEngine {
     return model.id.startsWith('gpt-5')
   } 
 
+  // gpt-5.6 rejects function tools combined with a reasoning_effort on
+  // /v1/chat/completions ("To use function tools, use /v1/responses or set
+  // reasoning_effort to 'none'"), so it has to go through the Responses API.
   modelRequiresResponsesApi(model: ChatModel): boolean {
-    return ['o3-pro*', 'codex*'].some((m) => minimatch(model.id, m))
+    return ['o3-pro*', 'codex*', 'gpt-5.6*'].some((m) => minimatch(model.id, m))
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -397,7 +400,9 @@ export default class extends LlmEngine {
       ...(this.modelSupportsTemperature(model) && opts?.temperature ? { temperature: opts?.temperature } : {}),
       ...(this.modelSupportsTopK(model) && opts?.top_k ? { logprobs: true, top_logprobs: opts?.top_k } : {}),
       ...(this.modelSupportsTopP(model) && opts?.top_p ? { top_p: opts?.top_p } : {}),
-      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort ? { reasoning_effort: opts?.reasoningEffort } : {}),
+      // cast: the SDK's ReasoningEffort still stops at 'high', but the API
+      // accepts 'xhigh'/'max' on the models that advertise them
+      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort ? { reasoning_effort: opts?.reasoningEffort as ReasoningEffort } : {}),
       ...(this.modelSupportsVerbosity(model) && opts?.verbosity ? { verbosity: opts.verbosity } : {}),
       ...(this.modelSupportsStructuredOutput(model) && opts?.structuredOutput ? {
           // @ts-expect-error structured output
@@ -1144,6 +1149,13 @@ export default class extends LlmEngine {
       ...(opts?.responseId ? { previous_response_id: opts.responseId } : {}),
       input,
       stream,
+    }
+
+    // the Responses API nests the effort rather than taking a flat
+    // reasoning_effort; without this the caller's effort is silently dropped
+    // for every model routed here
+    if (this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort) {
+      req.reasoning = { effort: opts.reasoningEffort as ReasoningEffort }
     }
 
     // attach tool definitions if any
