@@ -115,6 +115,30 @@ test('Build payload no attachment', async () => {
   ])
 })
 
+test('Build payload with tool calls pairs every call with a result', async () => {
+  const openai = new OpenAI(config)
+  const message = new Message('assistant', 'response', undefined, [
+    { id: 'tc-1', function: 'tool1', args: '{}', result: 'ok' },
+    { id: 'tc-2', function: 'tool2', args: '{}', result: { data: 'value' } },
+    { id: 'tc-3', function: 'tool3', args: '{}' }, // orphaned: no result recorded
+    { id: 'tc-4', function: 'tool4', args: '{}', result: null }, // orphaned: consumers may coerce missing results to null
+  ])
+  const payload = openai.buildPayload(openai.buildModel('gpt-model1'), [message])
+
+  // assistant message advertises all four tool calls
+  expect(payload[0].tool_calls).toHaveLength(4)
+
+  // every tool call gets a tool message with real string content
+  expect(payload).toHaveLength(5)
+  expect(payload[1]).toStrictEqual({ role: 'tool', tool_call_id: 'tc-1', name: 'tool1', content: 'ok' })
+  expect(payload[2]).toStrictEqual({ role: 'tool', tool_call_id: 'tc-2', name: 'tool2', content: JSON.stringify({ data: 'value' }) })
+
+  // orphaned calls are stubbed instead of serializing undefined/null content
+  const stub = JSON.stringify({ error: 'tool execution was interrupted before a result was recorded' })
+  expect(payload[3]).toStrictEqual({ role: 'tool', tool_call_id: 'tc-3', name: 'tool3', content: stub })
+  expect(payload[4]).toStrictEqual({ role: 'tool', tool_call_id: 'tc-4', name: 'tool4', content: stub })
+})
+
 test('Build payload with text attachment', async () => {
   const openai = new OpenAI(config)
   const messages = [
