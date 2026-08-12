@@ -372,7 +372,7 @@ describe('executeToolCallsSequentially', () => {
     expect(context.thread).toHaveLength(4)
   })
 
-  test('throws error for invalid JSON args', async () => {
+  test('invalid JSON args yield error result instead of throwing', async () => {
     const openai = new OpenAI(config)
     openai.addPlugin(new Plugin2())
 
@@ -384,17 +384,32 @@ describe('executeToolCallsSequentially', () => {
     }]
 
     const context = createMockContext()
+    const chunks: LlmChunk[] = []
 
     // @ts-expect-error protected method
-    const generator = openai.executeToolCallsSequentially(toolCalls, context, {
-      formatToolCallForThread: () => ({}),
-      formatToolResultForThread: () => ({}),
-      createNewStream: async () => ({} as LlmStream)
+    for await (const chunk of openai.executeToolCallsSequentially(toolCalls, context, {
+      formatToolCallForThread: (tc) => ({ role: 'assistant', tool_calls: [tc] }),
+      formatToolResultForThread: (result, tc) => ({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) } as any),
+      createNewStream: async () => ({
+        async *[Symbol.asyncIterator]() { yield { choices: [{ finish_reason: 'stop' }] } }
+      }) as unknown as LlmStream
+    })) {
+      chunks.push(chunk)
+    }
+
+    // Should yield error chunk with an error result attached
+    const errorChunk = chunks.find(c => c.type === 'tool' && (c as any).state === 'error')
+    expect(errorChunk).toBeDefined()
+    expect((errorChunk as any).call.result).toMatchObject({
+      error: expect.stringContaining('invalid JSON args')
     })
 
-    await expect(async () => {
-      for await (const _ of generator) { void _ }
-    }).rejects.toThrow('invalid JSON args')
+    // Should still pair the tool call with a result in the thread
+    expect(context.thread).toHaveLength(2)
+    expect(context.thread[1]).toMatchObject({ role: 'tool', tool_call_id: 'tool-1' })
+
+    // Should still continue to stream
+    expect(chunks[chunks.length - 1].type).toBe('stream')
   })
 
   test('handles abort signal during execution', async () => {
@@ -662,6 +677,61 @@ describe('executeToolCallsSequentially', () => {
     })
   })
 
+  test('failing tool yields error result and sibling tools still execute', async () => {
+    const openai = new OpenAI(config)
+    openai.addPlugin(new Plugin1())
+    openai.addPlugin(new Plugin2())
+
+    vi.mocked(Plugin1.prototype.execute).mockRejectedValueOnce(new Error('tool blew up'))
+
+    const toolCalls: LlmToolCall[] = [
+      { id: 'tool-1', function: 'plugin1', args: '[]', message: '' },
+      { id: 'tool-2', function: 'plugin2', args: '["arg"]', message: '' }
+    ]
+
+    const context = createMockContext()
+    const chunks: LlmChunk[] = []
+
+    // @ts-expect-error protected method
+    for await (const chunk of openai.executeToolCallsSequentially(toolCalls, context, {
+      formatToolCallForThread: (tc) => ({ role: 'assistant', tool_calls: [tc] }),
+      formatToolResultForThread: (result, tc) => ({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) } as any),
+      createNewStream: async () => ({
+        async *[Symbol.asyncIterator]() { yield { choices: [{ finish_reason: 'stop' }] } }
+      }) as unknown as LlmStream
+    })) {
+      chunks.push(chunk)
+    }
+
+    // Failing tool should yield error chunk with error result attached
+    const errorChunk = chunks.find(c => c.type === 'tool' && (c as any).state === 'error')
+    expect(errorChunk).toBeDefined()
+    expect((errorChunk as any).id).toBe('tool-1')
+    expect((errorChunk as any).done).toBe(true)
+    expect((errorChunk as any).call.result).toMatchObject({
+      error: expect.stringContaining('tool blew up')
+    })
+
+    // Sibling tool should still have executed
+    expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'test-model' }, ['arg'])
+    const completedChunk = chunks.find(c => c.type === 'tool' && (c as any).state === 'completed')
+    expect(completedChunk).toBeDefined()
+    expect((completedChunk as any).id).toBe('tool-2')
+
+    // Thread should pair every tool call with a result (2 calls + 2 results)
+    expect(context.thread).toHaveLength(4)
+    expect(context.thread[1]).toMatchObject({ role: 'tool', tool_call_id: 'tool-1', content: JSON.stringify({ error: 'tool blew up' }) })
+    expect(context.thread[3]).toMatchObject({ role: 'tool', tool_call_id: 'tool-2' })
+
+    // Tool history should record both, with the error result for the failed one
+    expect(context.toolHistory).toHaveLength(2)
+    expect(context.toolHistory[0]).toMatchObject({ id: 'tool-1', result: { error: 'tool blew up' } })
+    expect(context.toolHistory[1]).toMatchObject({ id: 'tool-2' })
+
+    // Should continue to stream so the model can react to the error
+    expect(chunks[chunks.length - 1].type).toBe('stream')
+  })
+
   test('increments currentRound is handled by caller', async () => {
     // Note: currentRound incrementing should be done by the caller
     // This test verifies the base method doesn't modify it
@@ -691,6 +761,101 @@ describe('executeToolCallsSequentially', () => {
     expect(context.currentRound).toBe(5)
     // But tool history should have recorded the round
     expect(context.toolHistory[0].round).toBe(5)
+  })
+
+})
+
+describe('executeToolCallsBatched', () => {
+
+  function createMockContext(): any {
+    return {
+      model: { id: 'test-model' },
+      opts: { usage: false },
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+      toolCalls: [],
+      toolHistory: [],
+      currentRound: 1,
+      thread: []
+    }
+  }
+
+  const batchOptions = {
+    formatBatchForThread: (completed: any[]) => ([
+      { role: 'assistant', content: completed.map(c => ({ type: 'tool_use', id: c.tc.id })) },
+      { role: 'user', content: completed.map(c => ({ type: 'tool_result', tool_use_id: c.tc.id, content: JSON.stringify(c.result) })) }
+    ]),
+    createNewStream: async () => ({
+      async *[Symbol.asyncIterator]() { yield { choices: [{ finish_reason: 'stop' }] } }
+    }) as unknown as LlmStream
+  }
+
+  test('failing tool yields error result and sibling tools still execute', async () => {
+    const openai = new OpenAI(config)
+    openai.addPlugin(new Plugin1())
+    openai.addPlugin(new Plugin2())
+
+    vi.mocked(Plugin1.prototype.execute).mockRejectedValueOnce(new Error('tool blew up'))
+
+    const toolCalls: LlmToolCall[] = [
+      { id: 'tool-1', function: 'plugin1', args: '[]', message: '' },
+      { id: 'tool-2', function: 'plugin2', args: '["arg"]', message: '' }
+    ]
+
+    const context = createMockContext()
+    const chunks: LlmChunk[] = []
+
+    // @ts-expect-error protected method
+    for await (const chunk of openai.executeToolCallsBatched(toolCalls, context, batchOptions)) {
+      chunks.push(chunk)
+    }
+
+    // Failing tool should yield error chunk with error result attached
+    const errorChunk = chunks.find(c => c.type === 'tool' && (c as any).state === 'error')
+    expect(errorChunk).toBeDefined()
+    expect((errorChunk as any).call.result).toMatchObject({
+      error: expect.stringContaining('tool blew up')
+    })
+
+    // Sibling tool should still have executed
+    expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'test-model' }, ['arg'])
+
+    // Batch should contain BOTH tools, each paired with a result
+    expect(context.thread).toHaveLength(2)
+    expect(context.thread[1].content).toHaveLength(2)
+    expect(context.thread[1].content[0]).toMatchObject({ tool_use_id: 'tool-1', content: JSON.stringify({ error: 'tool blew up' }) })
+    expect(context.thread[1].content[1]).toMatchObject({ tool_use_id: 'tool-2' })
+
+    // Should continue to stream so the model can react to the error
+    expect(chunks[chunks.length - 1].type).toBe('stream')
+  })
+
+  test('abort still stops the batch', async () => {
+    const openai = new OpenAI(config)
+    openai.addPlugin(new Plugin1())
+    openai.addPlugin(new Plugin2())
+
+    const abortController = new AbortController()
+    abortController.abort()
+
+    const toolCalls: LlmToolCall[] = [
+      { id: 'tool-1', function: 'plugin1', args: '[]', message: '' },
+      { id: 'tool-2', function: 'plugin2', args: '[]', message: '' }
+    ]
+
+    const context = {
+      ...createMockContext(),
+      opts: { abortSignal: abortController.signal }
+    }
+    const chunks: LlmChunk[] = []
+
+    // @ts-expect-error protected method
+    for await (const chunk of openai.executeToolCallsBatched(toolCalls, context, batchOptions)) {
+      chunks.push(chunk)
+    }
+
+    // Nothing added to thread, no continuation stream
+    expect(context.thread).toHaveLength(0)
+    expect(chunks.every(c => c.type !== 'stream')).toBe(true)
   })
 
 })

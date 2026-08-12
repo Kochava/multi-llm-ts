@@ -342,11 +342,15 @@ export default abstract class LlmEngine {
         
           for (const toolCall of msg.toolCalls) {
 
+            // a result may be missing if a previous generation failed mid-batch:
+            // stub it so the tool call stays paired with a valid result
             const toolPayload: LlmCompletionPayloadTool = {
               role: 'tool',
               tool_call_id: toolCall.id,
               name: toolCall.function,
-              content: typeof toolCall.result === 'string' ? toolCall.result : JSON.stringify(toolCall.result),
+              content: typeof toolCall.result === 'string' ? toolCall.result : JSON.stringify(
+                toolCall.result ?? { error: 'tool execution was interrupted before a result was recorded' }
+              ),
             }
             payloads.push(toolPayload)
 
@@ -692,19 +696,19 @@ export default abstract class LlmEngine {
     // Log the tool call
     logger.log(`[${this.getName()}] tool call ${toolCall.function} with ${toolCall.args}`)
 
-    // Parse arguments
     let args = null
     try {
-      if (toolCall.args.trim() === '') {
-        args = {}
-      } else {
-        args = JSON.parse(toolCall.args)
-      }
-    } catch (err) {
-      throw new Error(`[${this.getName()}] tool call ${toolCall.function} with invalid JSON args: "${toolCall.args}"`, { cause: err })
-    }
 
-    try {
+      // Parse arguments
+      try {
+        if (toolCall.args.trim() === '') {
+          args = {}
+        } else {
+          args = JSON.parse(toolCall.args)
+        }
+      } catch (err) {
+        throw new Error(`[${this.getName()}] tool call ${toolCall.function} with invalid JSON args: "${toolCall.args}"`, { cause: err })
+      }
       // Yield running notification
       yield {
         type: 'tool',
@@ -820,20 +824,37 @@ export default abstract class LlmEngine {
         throw error
       }
 
-      // Handle other errors - yield error chunk before re-throwing
+      // tool_abort sentinels stop the whole generation on purpose
+      if (error?.type === 'tool_abort') {
+        throw error
+      }
+
+      // Isolate the failure: record an error result so sibling tool calls
+      // still run and every tool call stays paired with a result
+      const result = { error: error instanceof Error ? error.message : 'Tool execution failed' }
+
       yield {
         type: 'tool',
         id: toolCall.id,
         name: toolCall.function,
         state: 'error',
-        status: error instanceof Error ? error.message : 'Tool execution failed',
+        status: result.error,
         done: true,
         call: {
           params: args,
-          result: undefined
+          result: result
         }
       } as LlmChunk
-      throw error
+
+      context.toolHistory.push({
+        id: toolCall.id,
+        name: toolCall.function,
+        args: args,
+        result: result,
+        round: context.currentRound,
+      })
+
+      return { args: args ?? {}, result }
     }
   }
 
