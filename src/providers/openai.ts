@@ -1,6 +1,6 @@
 import { minimatch } from 'minimatch'
 import OpenAI, { ClientOptions } from 'openai'
-import { zodResponseFormat } from 'openai/helpers/zod'
+import { zodResponseFormat, zodTextFormat } from 'openai/helpers/zod'
 import { CompletionUsage, ReasoningEffort } from 'openai/resources'
 import { ChatCompletionChunk, ChatCompletionCreateParamsBase, ChatCompletionMessageFunctionToolCall, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Response, ResponseCreateParams, ResponseFunctionToolCall, ResponseInputItem, ResponseOutputMessage, ResponseStreamEvent, ResponseUsage, Tool, ToolChoiceFunction, ToolChoiceOptions } from 'openai/resources/responses/responses'
@@ -740,18 +740,13 @@ export default class extends LlmEngine {
         }
 
         // build follow-up request
-        const followUpReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: response.id,
-          input: followReqInput,
-          stream: false,
-        }
-        
+        const followUpReq = this.buildResponsesFollowUpRequest(request, response.id, followReqInput, false)
+
         // debug
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
 
         // continue
-        response = await this.client.responses.create(followUpReq)
+        response = await this.client.responses.create(followUpReq) as Response
         continue
       }
 
@@ -1002,14 +997,7 @@ export default class extends LlmEngine {
         }
 
         // now we can build the follow-up request
-        const followReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: responseId,
-          input: followReqInput,
-          tools: request.tools,
-          tool_choice: request.tool_choice,
-          stream: true,
-        }
+        const followReq = this.buildResponsesFollowUpRequest(request, responseId, followReqInput, true)
         
         // debug
         logger.debug('[responsesStream] FOLLOW-UP STREAM REQ', JSON.stringify(followReq, null, 2))
@@ -1044,6 +1032,20 @@ export default class extends LlmEngine {
       }
       if (c && typeof c === 'object' && typeof c.text === 'string') return c.text
       return JSON.stringify(c)
+    }
+
+    function getToolCallId(toolCall: any): string {
+      return toolCall?.id || toolCall?.call_id || ''
+    }
+
+    function getToolCallName(toolCall: any): string {
+      return toolCall?.function?.name || toolCall?.name || ''
+    }
+
+    function getToolCallArguments(toolCall: any): string {
+      const args = toolCall?.function?.arguments ?? toolCall?.arguments ?? toolCall?.args
+      if (typeof args === 'string') return args
+      return JSON.stringify(args ?? {})
     }
 
     // rebuild the instructions
@@ -1105,10 +1107,24 @@ export default class extends LlmEngine {
 
         } else if (msg.role === 'assistant') {
 
-          input.push({
-            role: 'assistant',
-            content: extractText(msg)
-          })
+          const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : []
+          const assistantText = extractText(msg)
+
+          if (assistantText || !toolCalls.length) {
+            input.push({
+              role: 'assistant',
+              content: assistantText
+            })
+          }
+
+          for (const toolCall of toolCalls) {
+            input.push({
+              type: 'function_call',
+              call_id: getToolCallId(toolCall),
+              name: getToolCallName(toolCall),
+              arguments: getToolCallArguments(toolCall),
+            })
+          }
 
         // } else if (msg.role === 'assistant' && msg.messageId?.length) {
 
@@ -1134,10 +1150,9 @@ export default class extends LlmEngine {
 
         } else if (msg.role === 'tool') {
           input.push({
-            type: 'function_call',
+            type: 'function_call_output',
             call_id: msg.tool_call_id || '',
-            name: msg.name || '',
-            arguments: '',
+            output: msg.content || '',
           })
         }
       }
@@ -1158,6 +1173,12 @@ export default class extends LlmEngine {
       req.reasoning = { effort: opts.reasoningEffort as ReasoningEffort }
     }
 
+    // structured output maps to the Responses text format; without this the
+    // caller's schema is silently dropped on this path
+    if (this.modelSupportsStructuredOutput(model) && opts?.structuredOutput) {
+      req.text = { format: zodTextFormat(opts.structuredOutput.structure, opts.structuredOutput.name) }
+    }
+
     // attach tool definitions if any
     const tools = await this.getResponsesTools(model, opts)
     if (tools.length) {
@@ -1167,6 +1188,22 @@ export default class extends LlmEngine {
 
     // done
     return req
+  }
+
+  // previous_response_id does not carry instructions, reasoning or text format
+  // over to the next round, so they must be re-sent on every follow-up
+  private buildResponsesFollowUpRequest(request: ResponseCreateParams, previousResponseId: string, input: ResponseInputItem[], stream: boolean): ResponseCreateParams {
+    return {
+      model: request.model,
+      previous_response_id: previousResponseId,
+      input,
+      stream,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+      ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+      ...(request.text ? { text: request.text } : {}),
+      ...(request.tools ? { tools: request.tools } : {}),
+      ...(request.tool_choice ? { tool_choice: request.tool_choice } : {}),
+    }
   }
 
   async getResponsesTools(model: ChatModel, opts?: LlmCompletionOpts): Promise<Tool[]> {

@@ -5,6 +5,7 @@ import Message from '../../src/models/message'
 import OpenAI from '../../src/providers/openai'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
+import { z } from 'zod'
 
 Plugin2.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result2'))
 
@@ -319,6 +320,7 @@ test('OpenAI Responses API completion with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -327,6 +329,8 @@ test('OpenAI Responses API completion with tools', async () => {
         output: 'result2'
       }
     ],
+    tools: expect.any(Array),
+    tool_choice: 'auto',
     stream: false
   })
 
@@ -470,6 +474,7 @@ test('OpenAI Responses API stream with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -657,4 +662,113 @@ test('Responses request omits reasoning for a non-reasoning model', async () => 
 
   const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
   expect(req).not.toHaveProperty('reasoning')
+})
+
+
+test('Responses input replays prior tool call history as paired items', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'draw an image'),
+    new Message('assistant', '', undefined, [{
+      id: 'fc_123',
+      function: 'generate_image',
+      args: { prompt: 'sunset' },
+      result: { url: 'https://example.com/sunset.png' },
+    }]),
+    new Message('user', 'what did you create?'),
+  ], {
+    tools: false,
+  })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith({
+    model: 'gpt-5.6-luna',
+    instructions: 'instruction',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'draw an image' }] },
+      {
+        type: 'function_call',
+        call_id: 'fc_123',
+        name: 'generate_image',
+        arguments: JSON.stringify({ prompt: 'sunset' }),
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'fc_123',
+        output: JSON.stringify({ url: 'https://example.com/sunset.png' }),
+      },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what did you create?' }] },
+    ],
+    stream: false,
+  })
+})
+
+test('Responses follow-up carries instructions, reasoning effort and tools', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+
+  // previous_response_id does not carry instructions or reasoning over:
+  // both must be re-sent on every tool round, along with the tools
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses streaming follow-up carries instructions and reasoning effort', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  for await (const chunk of stream) { void chunk }
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses request carries structured output as text format', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.text).toMatchObject({
+    format: { type: 'json_schema', name: 'test', schema: expect.any(Object) },
+  })
+})
+
+test('Responses follow-up keeps the structured output format', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req2 = (_openai.default.prototype.responses.create as Mock).mock.calls[1][0]
+  expect(req2.text).toMatchObject({
+    format: expect.objectContaining({ type: 'json_schema', name: 'test' }),
+  })
 })
