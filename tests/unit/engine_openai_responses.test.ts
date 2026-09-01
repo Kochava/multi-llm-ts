@@ -3,6 +3,8 @@ import { vi, beforeEach, expect, test, Mock } from 'vitest'
 import { Plugin2, PluginPartialPreparation } from '../mocks/plugins'
 import Message from '../../src/models/message'
 import OpenAI from '../../src/providers/openai'
+import XAI from '../../src/providers/xai'
+import LMStudio from '../../src/providers/lmstudio'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
 import { z } from 'zod'
@@ -1210,4 +1212,75 @@ test('Responses follow-up keeps the structured output format', async () => {
   expect(req2.text).toMatchObject({
     format: expect.objectContaining({ type: 'json_schema', name: 'test' }),
   })
+})
+
+test('Responses request maps output and sampling options', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], {
+    useResponsesApi: true,
+    tools: false,
+    maxTokens: 100,
+    temperature: 0.7,
+    top_p: 0.9,
+    serviceTier: 'flex',
+    customOpts: { store: false },
+  })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.max_output_tokens).toBe(100)
+  expect(req.temperature).toBe(0.7)
+  expect(req.top_p).toBe(0.9)
+  expect(req.service_tier).toBe('flex')
+  expect(req.store).toBe(false)
+})
+
+test('Responses request maps verbosity alongside structured output', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], {
+    verbosity: 'low',
+    temperature: 0.7,
+    structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) },
+  })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.text.verbosity).toBe('low')
+  expect(req.text.format).toMatchObject({ type: 'json_schema', name: 'test' })
+  // reasoning models do not take sampling parameters
+  expect(req).not.toHaveProperty('temperature')
+})
+
+test('Responses request passes timeout as request options', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { tools: false, timeout: 5000 })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ model: 'gpt-5.6-luna' }),
+    { timeout: 5000 },
+  )
+})
+
+test('forced Responses routing applies only to the real OpenAI provider', () => {
+  const openai = new OpenAI(config)
+  const model = openai.buildModel('gpt-5.6-luna')
+
+  expect(openai.modelRequiresResponsesApi(model)).toBe(true)
+  expect(new XAI(config).modelRequiresResponsesApi(model)).toBe(false)
+  expect(new LMStudio(config).modelRequiresResponsesApi(model)).toBe(false)
+})
+
+test('explicit useResponsesApi false opts out of forced routing', () => {
+  const openai = new OpenAI(config)
+  const model = openai.buildModel('gpt-5.6-luna')
+
+  expect((openai as any).shouldUseResponsesApi(model, {})).toBe(true)
+  expect((openai as any).shouldUseResponsesApi(model, { useResponsesApi: false })).toBe(false)
 })
