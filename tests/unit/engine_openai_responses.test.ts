@@ -5,6 +5,7 @@ import Message from '../../src/models/message'
 import OpenAI from '../../src/providers/openai'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
+import { z } from 'zod'
 import { Plugin } from '../../src/plugin'
 import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
 
@@ -456,6 +457,7 @@ test('OpenAI Responses API completion with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -660,6 +662,7 @@ test('OpenAI Responses API stream with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -929,6 +932,7 @@ test('OpenAI Responses API stream starts tool execution when function call item 
   }))
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_early_tool',
     input: [
       {
@@ -1137,4 +1141,73 @@ test('Responses request omits reasoning for a non-reasoning model', async () => 
 
   const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
   expect(req).not.toHaveProperty('reasoning')
+})
+
+test('Responses follow-up carries instructions and reasoning effort', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+
+  // previous_response_id does not carry instructions or reasoning over:
+  // both must be re-sent on every tool round
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses streaming follow-up carries instructions and reasoning effort', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  for await (const chunk of stream) { void chunk }
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses request carries structured output as text format', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.text).toMatchObject({
+    format: { type: 'json_schema', name: 'test', schema: expect.any(Object) },
+  })
+})
+
+test('Responses follow-up keeps the structured output format', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req2 = (_openai.default.prototype.responses.create as Mock).mock.calls[1][0]
+  expect(req2.text).toMatchObject({
+    format: expect.objectContaining({ type: 'json_schema', name: 'test' }),
+  })
 })

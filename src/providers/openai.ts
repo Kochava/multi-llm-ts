@@ -1,6 +1,6 @@
 import { minimatch } from 'minimatch'
 import OpenAI, { ClientOptions } from 'openai'
-import { zodResponseFormat } from 'openai/helpers/zod'
+import { zodResponseFormat, zodTextFormat } from 'openai/helpers/zod'
 import { CompletionUsage, ReasoningEffort } from 'openai/resources'
 import { ChatCompletionChunk, ChatCompletionCreateParamsBase, ChatCompletionMessageFunctionToolCall, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Response, ResponseCreateParams, ResponseFunctionToolCall, ResponseInputItem, ResponseOutputMessage, ResponseStreamEvent, ResponseUsage, Tool, ToolChoiceFunction, ToolChoiceOptions } from 'openai/resources/responses/responses'
@@ -752,19 +752,14 @@ export default class extends LlmEngine {
         }
 
         // build follow-up request
-        const followUpReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: response.id,
-          input: followReqInput,
-          stream: false,
-        }
+        const followUpReq = this.buildResponsesFollowUpRequest(request, response.id, followReqInput, false)
         await this.attachResponsesTools(followUpReq, model, opts)
         
         // debug
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
 
         // continue
-        response = await this.client.responses.create(followUpReq)
+        response = await this.client.responses.create(followUpReq) as Response
         continue
       }
 
@@ -1231,12 +1226,7 @@ export default class extends LlmEngine {
           }))
 
         // now we can build the follow-up request
-        const followReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: responseId,
-          input: followReqInput,
-          stream: true,
-        }
+        const followReq = this.buildResponsesFollowUpRequest(request, responseId, followReqInput, true)
         await this.attachResponsesTools(followReq, model, opts)
         
         // debug
@@ -1411,10 +1401,30 @@ export default class extends LlmEngine {
       req.reasoning = { effort: opts.reasoningEffort as ReasoningEffort }
     }
 
+    // structured output maps to the Responses text format; without this the
+    // caller's schema is silently dropped on this path
+    if (this.modelSupportsStructuredOutput(model) && opts?.structuredOutput) {
+      req.text = { format: zodTextFormat(opts.structuredOutput.structure, opts.structuredOutput.name) }
+    }
+
     await this.attachResponsesTools(req, model, opts)
 
     // done
     return req
+  }
+
+  // previous_response_id does not carry instructions, reasoning or text format
+  // over to the next round, so they must be re-sent on every follow-up
+  private buildResponsesFollowUpRequest(request: ResponseCreateParams, previousResponseId: string, input: ResponseInputItem[], stream: boolean): ResponseCreateParams {
+    return {
+      model: request.model,
+      previous_response_id: previousResponseId,
+      input,
+      stream,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+      ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+      ...(request.text ? { text: request.text } : {}),
+    }
   }
 
   private async attachResponsesTools(req: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): Promise<void> {
