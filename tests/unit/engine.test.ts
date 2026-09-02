@@ -139,6 +139,16 @@ test('Build payload with tool calls pairs every call with a result', async () =>
   expect(payload[4]).toStrictEqual({ role: 'tool', tool_call_id: 'tc-4', name: 'tool4', content: stub })
 })
 
+test('Build payload keeps Gemini thought signatures off other providers', async () => {
+  const openai = new OpenAI(config)
+  const message = new Message('assistant', 'answer')
+  message.thoughtSignature = 'sig-msg'
+  message.toolCalls = [{ id: 'call_1', function: 'plugin', args: { a: 1 }, result: 'ok', thoughtSignature: 'sig-tc' }]
+  const payload = openai.buildPayload(openai.buildModel('gpt-model1'), [message])
+  expect(JSON.stringify(payload)).not.toContain('thoughtSignature')
+  expect(payload[0].tool_calls?.[0]).toStrictEqual({ type: 'function', id: 'call_1', function: { name: 'plugin', arguments: JSON.stringify({ a: 1 }) } })
+})
+
 test('Build payload with text attachment', async () => {
   const openai = new OpenAI(config)
   const messages = [

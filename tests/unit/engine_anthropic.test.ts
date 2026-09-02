@@ -22,6 +22,9 @@ vi.mock('@anthropic-ai/sdk', async() => {
         { id: 'claude-3-5-model-date', display_name: 'Claude Model 3.5', created_at: '2' },
         { id: 'claude-3-7-sonnet-date', display_name: 'Claude Model 3.7', created_at: '3' },
         { id: 'claude-model-4-date', display_name: 'Claude Model 4', created_at: '4' },
+        { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5', created_at: '5' },
+        { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5', created_at: '6' },
+        { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1', created_at: '7' },
       ] }
     })
   }
@@ -86,6 +89,9 @@ beforeEach(() => {
 test('Anthropic Load Models', async () => {
   const models = await loadAnthropicModels(config)
   expect(models!.chat).toStrictEqual([
+    { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: true } },
+    { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: true } },
+    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: true } },
     { id: 'claude-model-4-date', name: 'Claude Model 4', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: false } },
     { id: 'claude-3-7-sonnet-date', name: 'Claude Model 3.7', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: true, caching: true } },
     { id: 'claude-3-5-model-date', name: 'Claude Model 3.5', meta: expect.any(Object), capabilities: { tools: true, vision: true, reasoning: false, caching: false } },

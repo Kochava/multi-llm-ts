@@ -115,13 +115,17 @@ export default class extends LlmEngine {
 
   getModelCapabilities(model: ModelAnthropic): ModelCapabilities {
 
+    // claude-<family>-<major>… with major >= 5 (claude-sonnet-5, claude-fable-5-1); not claude-3-5-*
+    const isClaude5Plus = /^claude-[a-z]+-(?:[5-9]|\d{2,})(?:-|$)/.test(model.id)
+
     const visionGlobs = [
       'claude-3-*',
       'claude-*-4-*',
       'computer-use',
     ]
 
-    const reasoning = model.id === 'claude-3-7-sonnet-thinking' ||
+    const reasoning = isClaude5Plus ||
+      model.id === 'claude-3-7-sonnet-thinking' ||
       model.id.includes('claude-3-7') ||
       model.id.includes('claude-3.7') ||
       minimatch(model.id, 'claude-*-4-*')
@@ -129,6 +133,7 @@ export default class extends LlmEngine {
     const cachingGlobs = [
       'claude-opus-4-*',
       'claude-sonnet-4-*',
+      'claude-haiku-4-*',
       'claude-3-7-sonnet-*',
       'claude-3-5-sonnet-*',
       'claude-3-5-haiku-*',
@@ -138,9 +143,9 @@ export default class extends LlmEngine {
 
     return {
       tools: true,
-      vision: visionGlobs.some((m) => minimatch(model.id, m)),
+      vision: isClaude5Plus || visionGlobs.some((m) => minimatch(model.id, m)),
       reasoning,
-      caching: cachingGlobs.some((m) => minimatch(model.id, m)),
+      caching: isClaude5Plus || cachingGlobs.some((m) => minimatch(model.id, m)),
     }
 
   }
