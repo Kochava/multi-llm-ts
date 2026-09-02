@@ -124,7 +124,10 @@ export type EngineHookPayloads = {
 
 export type EngineHookCallback<T extends EngineHookName> = (payload: EngineHookPayloads[T]) => void | Promise<void>
 
-export type LlmReasoningEffort = 'low'|'medium'|'high'
+// 'minimal', 'xhigh' and 'max' are only accepted by some models — OpenAI
+// rejects an effort a model does not declare, so callers are expected to check
+// support before sending one of those.
+export type LlmReasoningEffort = 'minimal'|'low'|'medium'|'high'|'xhigh'|'max'
 
 export type LlmVerbosity = 'low'|'medium'|'high'
 

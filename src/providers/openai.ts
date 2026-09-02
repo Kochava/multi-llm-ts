@@ -1,7 +1,7 @@
 import { minimatch } from 'minimatch'
 import OpenAI, { ClientOptions } from 'openai'
-import { zodResponseFormat } from 'openai/helpers/zod'
-import { CompletionUsage } from 'openai/resources'
+import { zodResponseFormat, zodTextFormat } from 'openai/helpers/zod'
+import { CompletionUsage, ReasoningEffort } from 'openai/resources'
 import { ChatCompletionChunk, ChatCompletionCreateParamsBase, ChatCompletionMessageFunctionToolCall, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Response, ResponseCreateParams, ResponseFunctionToolCall, ResponseInputItem, ResponseOutputMessage, ResponseStreamEvent, ResponseUsage, Tool, ToolChoiceFunction, ToolChoiceOptions } from 'openai/resources/responses/responses'
 import LlmEngine from '../engine'
@@ -128,8 +128,17 @@ export default class extends LlmEngine {
     return model.id.startsWith('gpt-5')
   } 
 
+  // gpt-5.6 rejects function tools combined with a reasoning_effort on
+  // /v1/chat/completions ("To use function tools, use /v1/responses or set
+  // reasoning_effort to 'none'"), so it has to go through the Responses API.
   modelRequiresResponsesApi(model: ChatModel): boolean {
-    return ['o3-pro*', 'codex*'].some((m) => minimatch(model.id, m))
+    // OpenAI-compatible providers (LM Studio, xAI, Azure, ...) inherit this
+    // class but may not implement /v1/responses, so the name-based routing
+    // only applies to the real OpenAI provider
+    if (this.getId() !== 'openai') {
+      return false
+    }
+    return ['o3-pro*', 'codex*', 'gpt-5.6*'].some((m) => minimatch(model.id, m))
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -182,6 +191,11 @@ export default class extends LlmEngine {
   }
 
   protected shouldUseResponsesApi(model: ChatModel, opts?: LlmCompletionOpts): boolean {
+    // an explicit opt-out wins over any routing rule (e.g. a custom endpoint
+    // serving a gpt-5.6* alias without implementing /v1/responses)
+    if (opts?.useResponsesApi === false) {
+      return false
+    }
     return this.modelRequiresResponsesApi(model) || (opts?.useResponsesApi ?? false) || (this.config.useOpenAIResponsesApi ?? false)
   }
 
@@ -408,7 +422,9 @@ export default class extends LlmEngine {
       ...(this.modelSupportsTemperature(model) && opts?.temperature ? { temperature: opts?.temperature } : {}),
       ...(this.modelSupportsTopK(model) && opts?.top_k ? { logprobs: true, top_logprobs: opts?.top_k } : {}),
       ...(this.modelSupportsTopP(model) && opts?.top_p ? { top_p: opts?.top_p } : {}),
-      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort ? { reasoning_effort: opts?.reasoningEffort } : {}),
+      // cast: the SDK's ReasoningEffort still stops at 'high', but the API
+      // accepts 'xhigh'/'max' on the models that advertise them
+      ...(this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort ? { reasoning_effort: opts?.reasoningEffort as ReasoningEffort } : {}),
       ...(this.modelSupportsVerbosity(model) && opts?.verbosity ? { verbosity: opts.verbosity } : {}),
       ...(this.modelSupportsStructuredOutput(model) && opts?.structuredOutput ? {
           // @ts-expect-error structured output
@@ -650,7 +666,7 @@ export default class extends LlmEngine {
     logger.debug('[responses] REQUEST', JSON.stringify(request, null, 2))
 
     // call
-    let response: Response = await this.client.responses.create(request) as Response
+    let response: Response = await this.createResponse(request, model, opts) as Response
 
     // we can loop several times calling tools
     while (true) {
@@ -747,19 +763,14 @@ export default class extends LlmEngine {
         }
 
         // build follow-up request
-        const followUpReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: response.id,
-          input: followReqInput,
-          stream: false,
-        }
+        const followUpReq = this.buildResponsesFollowUpRequest(request, response.id, followReqInput, false)
         await this.attachResponsesTools(followUpReq, model, opts)
         
         // debug
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
 
         // continue
-        response = await this.client.responses.create(followUpReq)
+        response = await this.createResponse(followUpReq, model, opts) as Response
         continue
       }
 
@@ -780,7 +791,7 @@ export default class extends LlmEngine {
     logger.log(`[${this.getName()}] prompting model ${model.id}`)
 
     const request = await this.buildResponsesRequestFromMessages(model, thread, opts, true)
-    const stream = await this.client.responses.create(request) as AsyncIterable<ResponseStreamEvent>
+    const stream = await this.createResponse(request, model, opts) as AsyncIterable<ResponseStreamEvent>
     logger.debug('[responsesStream] subscribed')
 
     const context: OpenAIStreamingContext = {
@@ -1226,19 +1237,14 @@ export default class extends LlmEngine {
           }))
 
         // now we can build the follow-up request
-        const followReq: ResponseCreateParams = {
-          model: model.id,
-          previous_response_id: responseId,
-          input: followReqInput,
-          stream: true,
-        }
+        const followReq = this.buildResponsesFollowUpRequest(request, responseId, followReqInput, true)
         await this.attachResponsesTools(followReq, model, opts)
         
         // debug
         logger.debug('[responsesStream] FOLLOW-UP STREAM REQ', JSON.stringify(followReq, null, 2))
 
         // switch stream
-        currentStream = await this.client.responses.create(followReq) as AsyncIterable<ResponseStreamEvent>
+        currentStream = await this.createResponse(followReq, model, opts) as AsyncIterable<ResponseStreamEvent>
 
       }
 
@@ -1397,12 +1403,58 @@ export default class extends LlmEngine {
       ...(opts?.responseId ? { previous_response_id: opts.responseId } : {}),
       input,
       stream,
+      // same completion options the chat/completions path maps
+      ...(this.modelSupportsMaxTokens(model) && opts?.maxTokens ? { max_output_tokens: opts.maxTokens } : {}),
+      ...(this.modelSupportsTemperature(model) && opts?.temperature ? { temperature: opts.temperature } : {}),
+      ...(this.modelSupportsTopP(model) && opts?.top_p ? { top_p: opts.top_p } : {}),
+      ...(this.supportsServiceTiering() && opts?.serviceTier ? { service_tier: opts.serviceTier } : {}),
+      ...(opts?.customOpts ? opts.customOpts : {}),
+    }
+
+    // the Responses API nests the effort rather than taking a flat
+    // reasoning_effort; without this the caller's effort is silently dropped
+    // for every model routed here
+    if (this.modelSupportsReasoningEffort(model) && opts?.reasoningEffort) {
+      req.reasoning = { effort: opts.reasoningEffort as ReasoningEffort }
+    }
+
+    // structured output and verbosity both live under the text config here;
+    // without this the caller's schema is silently dropped on this path
+    const text: NonNullable<ResponseCreateParams['text']> = {
+      ...(this.modelSupportsStructuredOutput(model) && opts?.structuredOutput ? { format: zodTextFormat(opts.structuredOutput.structure, opts.structuredOutput.name) } : {}),
+      ...(this.modelSupportsVerbosity(model) && opts?.verbosity ? { verbosity: opts.verbosity } : {}),
+    }
+    if (Object.keys(text).length) {
+      req.text = text
     }
 
     await this.attachResponsesTools(req, model, opts)
 
     // done
     return req
+  }
+
+  // forwards the same request options (timeout) the chat/completions path
+  // passes; only added when set so call expectations stay single-argument
+  protected createResponse(request: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): ReturnType<OpenAI['responses']['create']> {
+    const requestOptions = this.getRequestOptions(model, opts)
+    return Object.keys(requestOptions).length
+      ? this.client.responses.create(request, requestOptions)
+      : this.client.responses.create(request)
+  }
+
+  // previous_response_id does not carry instructions, reasoning or text format
+  // over to the next round, so they must be re-sent on every follow-up
+  private buildResponsesFollowUpRequest(request: ResponseCreateParams, previousResponseId: string, input: ResponseInputItem[], stream: boolean): ResponseCreateParams {
+    return {
+      model: request.model,
+      previous_response_id: previousResponseId,
+      input,
+      stream,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+      ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+      ...(request.text ? { text: request.text } : {}),
+    }
   }
 
   private async attachResponsesTools(req: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): Promise<void> {
@@ -1630,7 +1682,7 @@ export default class extends LlmEngine {
     const toolOpts = await this.getToolsOpts(model, opts)
     if ((toolOpts as any).tools) req.tools = (toolOpts as any).tools
 
-    const resp: any = await (this.client as any).responses.create(req)
+    const resp: any = await this.createResponse(req, model, opts)
     return {
       type: 'text',
       content: (resp.output?.text) ?? '',

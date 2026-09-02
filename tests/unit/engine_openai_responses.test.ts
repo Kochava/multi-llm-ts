@@ -3,8 +3,11 @@ import { vi, beforeEach, expect, test, Mock } from 'vitest'
 import { Plugin2, PluginPartialPreparation } from '../mocks/plugins'
 import Message from '../../src/models/message'
 import OpenAI from '../../src/providers/openai'
+import XAI from '../../src/providers/xai'
+import LMStudio from '../../src/providers/lmstudio'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
+import { z } from 'zod'
 import { Plugin } from '../../src/plugin'
 import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
 
@@ -456,6 +459,7 @@ test('OpenAI Responses API completion with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -660,6 +664,7 @@ test('OpenAI Responses API stream with tools', async () => {
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_123',
     input: [
       {
@@ -929,6 +934,7 @@ test('OpenAI Responses API stream starts tool execution when function call item 
   }))
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
     model: 'gpt-4',
+    instructions: 'instruction',
     previous_response_id: 'resp_early_tool',
     input: [
       {
@@ -1075,4 +1081,206 @@ test('OpenAI Responses API multiple system messages', async () => {
     }] } ],
     stream: false
   })
+})
+
+test('gpt-5.6 routes to the Responses API without an explicit opt-in', async () => {
+  const openai = new OpenAI(config)
+
+  // no useResponsesApi: the model itself must force the Responses path, because
+  // chat/completions rejects function tools combined with a reasoning effort.
+  // the openai mock only implements responses.create, so a chat/completions
+  // call would throw rather than silently pass
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ model: 'gpt-5.6-luna' })
+  )
+})
+
+test('Responses request carries the reasoning effort', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-sol'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'high' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ reasoning: { effort: 'high' } })
+  )
+})
+
+test('Responses request carries efforts the SDK type does not know yet', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-sol'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'xhigh' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ reasoning: { effort: 'xhigh' } })
+  )
+})
+
+test('Responses request omits reasoning when no effort is set', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], {})
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req).not.toHaveProperty('reasoning')
+})
+
+test('Responses request omits reasoning for a non-reasoning model', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], { useResponsesApi: true, reasoningEffort: 'high' })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req).not.toHaveProperty('reasoning')
+})
+
+test('Responses follow-up carries instructions and reasoning effort', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+
+  // previous_response_id does not carry instructions or reasoning over:
+  // both must be re-sent on every tool round
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses streaming follow-up carries instructions and reasoning effort', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  for await (const chunk of stream) { void chunk }
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledTimes(2)
+  expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    previous_response_id: 'resp_123',
+    instructions: 'instruction',
+    reasoning: { effort: 'low' },
+    tools: expect.any(Array),
+  }))
+})
+
+test('Responses request carries structured output as text format', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.text).toMatchObject({
+    format: { type: 'json_schema', name: 'test', schema: expect.any(Object) },
+  })
+})
+
+test('Responses follow-up keeps the structured output format', async () => {
+  const openai = new OpenAI(config)
+  openai.addPlugin(new Plugin2())
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) } })
+
+  const req2 = (_openai.default.prototype.responses.create as Mock).mock.calls[1][0]
+  expect(req2.text).toMatchObject({
+    format: expect.objectContaining({ type: 'json_schema', name: 'test' }),
+  })
+})
+
+test('Responses request maps output and sampling options', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-4'), [
+    new Message('user', 'prompt'),
+  ], {
+    useResponsesApi: true,
+    tools: false,
+    maxTokens: 100,
+    temperature: 0.7,
+    top_p: 0.9,
+    serviceTier: 'flex',
+    customOpts: { store: false },
+  })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.max_output_tokens).toBe(100)
+  expect(req.temperature).toBe(0.7)
+  expect(req.top_p).toBe(0.9)
+  expect(req.service_tier).toBe('flex')
+  expect(req.store).toBe(false)
+})
+
+test('Responses request maps verbosity alongside structured output', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], {
+    verbosity: 'low',
+    temperature: 0.7,
+    structuredOutput: { name: 'test', structure: z.object({ answer: z.string() }) },
+  })
+
+  const req = (_openai.default.prototype.responses.create as Mock).mock.calls[0][0]
+  expect(req.text.verbosity).toBe('low')
+  expect(req.text.format).toMatchObject({ type: 'json_schema', name: 'test' })
+  // reasoning models do not take sampling parameters
+  expect(req).not.toHaveProperty('temperature')
+})
+
+test('Responses request passes timeout as request options', async () => {
+  const openai = new OpenAI(config)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [
+    new Message('user', 'prompt'),
+  ], { tools: false, timeout: 5000 })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ model: 'gpt-5.6-luna' }),
+    { timeout: 5000 },
+  )
+})
+
+test('forced Responses routing applies only to the real OpenAI provider', () => {
+  const openai = new OpenAI(config)
+  const model = openai.buildModel('gpt-5.6-luna')
+
+  expect(openai.modelRequiresResponsesApi(model)).toBe(true)
+  expect(new XAI(config).modelRequiresResponsesApi(model)).toBe(false)
+  expect(new LMStudio(config).modelRequiresResponsesApi(model)).toBe(false)
+})
+
+test('explicit useResponsesApi false opts out of forced routing', () => {
+  const openai = new OpenAI(config)
+  const model = openai.buildModel('gpt-5.6-luna')
+
+  expect((openai as any).shouldUseResponsesApi(model, {})).toBe(true)
+  expect((openai as any).shouldUseResponsesApi(model, { useResponsesApi: false })).toBe(false)
 })
