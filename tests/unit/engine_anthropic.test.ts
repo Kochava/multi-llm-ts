@@ -542,6 +542,27 @@ test('Anthropic stream without tools', async () => {
   expect(stream).toBeDefined()
 })
 
+test('Anthropic Claude 5 adaptive thinking', async () => {
+  const anthropic = new Anthropic(config)
+  const model = anthropic.buildModel('claude-sonnet-5')
+  model.capabilities = anthropic.getModelCapabilities({ id: 'claude-sonnet-5' } as any)
+  const messages = [ new Message('system', 'instruction'), new Message('user', 'prompt') ]
+  await anthropic.stream(model, messages, { reasoning: true })
+  const first = (_Anthropic.default.prototype.messages.create as any).mock.calls[0][0]
+  expect(first.model).toBe('claude-sonnet-5')
+  expect(first.thinking).toEqual({ type: 'adaptive' })
+  expect(first.temperature).toBeUndefined()
+  expect(first.output_config).toBeUndefined()
+  await anthropic.stream(model, messages, { reasoning: true, reasoningEffort: 'minimal' })
+  const second = (_Anthropic.default.prototype.messages.create as any).mock.calls[1][0]
+  expect(second.thinking).toEqual({ type: 'adaptive' })
+  expect(second.output_config).toEqual({ effort: 'low' })
+  await anthropic.stream(model, messages, { reasoning: false, reasoningEffort: 'high' })
+  const third = (_Anthropic.default.prototype.messages.create as any).mock.calls[2][0]
+  expect(third.thinking).toBeUndefined()
+  expect(third.output_config).toEqual({ effort: 'high' })
+})
+
 test('Anthropic thinking', async () => {
   const anthropic = new Anthropic(config)
   await anthropic.stream(anthropic.buildModel('model'), [
