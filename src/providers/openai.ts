@@ -706,6 +706,7 @@ export default class extends LlmEngine {
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${toolCall.arguments}"`, { cause: err })
           }
+          args = this.stripUnsetOptionalArgs(request.tools, toolCall.name, args)
 
           // now execute
           let lastUpdate: PluginExecutionResult|undefined = undefined
@@ -890,7 +891,8 @@ export default class extends LlmEngine {
         const parseToolCallArgs = (toolCall: ResponseFunctionToolCall): any => {
           const rawArgs = toolCall.arguments || ''
           try {
-            return rawArgs.trim() ? JSON.parse(rawArgs) : {}
+            const args = rawArgs.trim() ? JSON.parse(rawArgs) : {}
+            return this.stripUnsetOptionalArgs(request.tools, toolCall.name, args)
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${rawArgs}"`, { cause: err })
           }
@@ -1620,6 +1622,28 @@ export default class extends LlmEngine {
 
     const result = nullable ? this.makeSchemaNullable(normalized) : normalized
     return { schema: result, strict }
+  }
+
+  // strict mode lists every property as required and makes the optional ones
+  // nullable, so the model has to send null (some send '') for anything it
+  // does not set; tools validate against their own schema and reject those,
+  // so unset optionals are dropped the way a non-strict model would omit them
+  private stripUnsetOptionalArgs(tools: Tool[] | undefined, name: string, args: any): any {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+    const tool = tools?.find((t: any) => t.type === 'function' && t.name === name) as any
+    const properties = tool?.parameters?.properties
+    if (!properties) return args
+    for (const [key, value] of Object.entries(args)) {
+      const schema = properties[key]
+      if (!schema || !this.schemaIsNullable(schema)) continue
+      if (value === null || value === '') delete args[key]
+    }
+    return args
+  }
+
+  private schemaIsNullable(schema: any): boolean {
+    return this.schemaHasType(schema, 'null')
+      || (Array.isArray(schema.anyOf) && schema.anyOf.some((entry: any) => entry?.type === 'null'))
   }
 
   private schemaHasType(schema: any, type: string): boolean {
