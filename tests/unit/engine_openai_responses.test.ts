@@ -1284,3 +1284,171 @@ test('explicit useResponsesApi false opts out of forced routing', () => {
   expect((openai as any).shouldUseResponsesApi(model, {})).toBe(true)
   expect((openai as any).shouldUseResponsesApi(model, { useResponsesApi: false })).toBe(false)
 })
+
+// strict mode forces the model to emit every property, so optional ones the
+// model does not want to set arrive as null (or an empty string) instead of
+// being omitted; downstream tools validate against their own schema and
+// reject those, so they must be dropped before execution
+class LookupPlugin extends Plugin {
+  getName(): string { return 'lookup' }
+  getDescription(): string { return 'lookup things' }
+  getPreparationDescription(): string { return 'preparing lookup' }
+  getRunningDescription(): string { return 'running lookup' }
+  getParameters(): PluginParameter[] {
+    return [
+      { name: 'query', type: 'string', description: 'q', required: true },
+      { name: 'offset', type: 'string', description: 'pagination token', required: false },
+      { name: 'team', type: 'string', description: 'team', required: false },
+      { name: 'limit', type: 'number', description: 'limit', required: false },
+    ]
+  }
+  async execute(): Promise<any> { return { ok: true } }
+}
+
+const lookupArgs = JSON.stringify({ query: 'scrum', offset: null, team: '', limit: null })
+
+test('Responses non-streaming drops unset optional args before executing the tool', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: lookupArgs }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  const plugin = new LookupPlugin()
+  const execute = vi.spyOn(plugin, 'execute')
+  openai.addPlugin(plugin)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
+})
+
+test('Responses streaming drops unset optional args before executing the tool', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: 'resp_1' } }
+      yield { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } }
+      yield { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: lookupArgs }
+      yield { type: 'response.output_item.done', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: lookupArgs } }
+      yield { type: 'response.completed', response: { id: 'resp_1' } }
+    }
+  }))
+  create.mockImplementationOnce(async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: 'resp_2' } }
+      yield { type: 'response.output_text.delta', delta: 'done' }
+      yield { type: 'response.completed', response: { id: 'resp_2' } }
+    }
+  }))
+
+  const openai = new OpenAI(config)
+  const plugin = new LookupPlugin()
+  const execute = vi.spyOn(plugin, 'execute')
+  openai.addPlugin(plugin)
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+  for await (const chunk of stream) { void chunk }
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
+})
+
+test('Responses keeps a null required arg so the tool can report it', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: JSON.stringify({ query: null, offset: null }) }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  const plugin = new LookupPlugin()
+  const execute = vi.spyOn(plugin, 'execute')
+  openai.addPlugin(plugin)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: null })
+})
+
+// progressive tool access: a tool granted during one round is only attached to
+// the next request, so the strip must use the tools of the round the call
+// actually came from, not the initial request
+class GrantPlugin extends Plugin {
+  constructor(private engine: OpenAI) { super() }
+  getName(): string { return 'grant' }
+  getDescription(): string { return 'grant access' }
+  getPreparationDescription(): string { return 'preparing grant' }
+  getRunningDescription(): string { return 'running grant' }
+  getParameters(): PluginParameter[] { return [] }
+  async execute(): Promise<any> { this.engine.addPlugin(new LookupPlugin()); return { granted: ['lookup'] } }
+}
+
+test('Responses non-streaming strips unset optionals for a tool granted mid-conversation', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'grant', arguments: '{}' }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'lookup', arguments: lookupArgs }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_3',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  openai.addPlugin(new GrantPlugin(openai))
+  const execute = vi.spyOn(LookupPlugin.prototype, 'execute')
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
+  execute.mockRestore()
+})
+
+test('Responses streaming strips unset optionals for a tool granted mid-conversation', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  const toolCallRound = (id: string, name: string, args: string) => async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: `resp_${id}` } }
+      yield { type: 'response.output_item.added', item: { type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name, arguments: '' } }
+      yield { type: 'response.function_call_arguments.delta', item_id: `fc_${id}`, delta: args }
+      yield { type: 'response.output_item.done', item: { type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name, arguments: args } }
+      yield { type: 'response.completed', response: { id: `resp_${id}` } }
+    }
+  })
+  create.mockImplementationOnce(toolCallRound('1', 'grant', '{}'))
+  create.mockImplementationOnce(toolCallRound('2', 'lookup', lookupArgs))
+  create.mockImplementationOnce(async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: 'resp_3' } }
+      yield { type: 'response.output_text.delta', delta: 'done' }
+      yield { type: 'response.completed', response: { id: 'resp_3' } }
+    }
+  }))
+
+  const openai = new OpenAI(config)
+  openai.addPlugin(new GrantPlugin(openai))
+  const execute = vi.spyOn(LookupPlugin.prototype, 'execute')
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+  for await (const chunk of stream) { void chunk }
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
+  execute.mockRestore()
+})

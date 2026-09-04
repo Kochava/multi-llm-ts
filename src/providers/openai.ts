@@ -668,6 +668,9 @@ export default class extends LlmEngine {
     // call
     let response: Response = await this.createResponse(request, model, opts) as Response
 
+    // tools granted during a round are only attached to the next request
+    let activeTools = request.tools
+
     // we can loop several times calling tools
     while (true) {
 
@@ -706,6 +709,7 @@ export default class extends LlmEngine {
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${toolCall.arguments}"`, { cause: err })
           }
+          args = this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
 
           // now execute
           let lastUpdate: PluginExecutionResult|undefined = undefined
@@ -765,6 +769,7 @@ export default class extends LlmEngine {
         // build follow-up request
         const followUpReq = this.buildResponsesFollowUpRequest(request, response.id, followReqInput, false)
         await this.attachResponsesTools(followUpReq, model, opts)
+        activeTools = followUpReq.tools
         
         // debug
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
@@ -814,6 +819,9 @@ export default class extends LlmEngine {
       
       // track the response id
       let responseId: string = ''
+
+      // tools granted during a round are only attached to the next request
+      let activeTools = request.tools
 
       // we need to accumulate usage
       const usage: LlmUsage = context.usage
@@ -890,7 +898,8 @@ export default class extends LlmEngine {
         const parseToolCallArgs = (toolCall: ResponseFunctionToolCall): any => {
           const rawArgs = toolCall.arguments || ''
           try {
-            return rawArgs.trim() ? JSON.parse(rawArgs) : {}
+            const args = rawArgs.trim() ? JSON.parse(rawArgs) : {}
+            return this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${rawArgs}"`, { cause: err })
           }
@@ -1239,6 +1248,7 @@ export default class extends LlmEngine {
         // now we can build the follow-up request
         const followReq = this.buildResponsesFollowUpRequest(request, responseId, followReqInput, true)
         await this.attachResponsesTools(followReq, model, opts)
+        activeTools = followReq.tools
         
         // debug
         logger.debug('[responsesStream] FOLLOW-UP STREAM REQ', JSON.stringify(followReq, null, 2))
@@ -1620,6 +1630,28 @@ export default class extends LlmEngine {
 
     const result = nullable ? this.makeSchemaNullable(normalized) : normalized
     return { schema: result, strict }
+  }
+
+  // strict mode lists every property as required and makes the optional ones
+  // nullable, so the model has to send null (some send '') for anything it
+  // does not set; tools validate against their own schema and reject those,
+  // so unset optionals are dropped the way a non-strict model would omit them
+  private stripUnsetOptionalArgs(tools: Tool[] | undefined, name: string, args: any): any {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+    const tool = tools?.find((t: any) => t.type === 'function' && t.name === name) as any
+    const properties = tool?.parameters?.properties
+    if (!properties) return args
+    for (const [key, value] of Object.entries(args)) {
+      const schema = properties[key]
+      if (!schema || !this.schemaIsNullable(schema)) continue
+      if (value === null || value === '') delete args[key]
+    }
+    return args
+  }
+
+  private schemaIsNullable(schema: any): boolean {
+    return this.schemaHasType(schema, 'null')
+      || (Array.isArray(schema.anyOf) && schema.anyOf.some((entry: any) => entry?.type === 'null'))
   }
 
   private schemaHasType(schema: any, type: string): boolean {
