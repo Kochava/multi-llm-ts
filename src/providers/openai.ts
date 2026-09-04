@@ -668,6 +668,9 @@ export default class extends LlmEngine {
     // call
     let response: Response = await this.createResponse(request, model, opts) as Response
 
+    // tools granted during a round are only attached to the next request
+    let activeTools = request.tools
+
     // we can loop several times calling tools
     while (true) {
 
@@ -706,7 +709,7 @@ export default class extends LlmEngine {
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${toolCall.arguments}"`, { cause: err })
           }
-          args = this.stripUnsetOptionalArgs(request.tools, toolCall.name, args)
+          args = this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
 
           // now execute
           let lastUpdate: PluginExecutionResult|undefined = undefined
@@ -766,6 +769,7 @@ export default class extends LlmEngine {
         // build follow-up request
         const followUpReq = this.buildResponsesFollowUpRequest(request, response.id, followReqInput, false)
         await this.attachResponsesTools(followUpReq, model, opts)
+        activeTools = followUpReq.tools
         
         // debug
         logger.debug('[responses] FOLLOW-UP REQUEST', JSON.stringify(followUpReq, null, 2))
@@ -815,6 +819,9 @@ export default class extends LlmEngine {
       
       // track the response id
       let responseId: string = ''
+
+      // tools granted during a round are only attached to the next request
+      let activeTools = request.tools
 
       // we need to accumulate usage
       const usage: LlmUsage = context.usage
@@ -892,7 +899,7 @@ export default class extends LlmEngine {
           const rawArgs = toolCall.arguments || ''
           try {
             const args = rawArgs.trim() ? JSON.parse(rawArgs) : {}
-            return this.stripUnsetOptionalArgs(request.tools, toolCall.name, args)
+            return this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${rawArgs}"`, { cause: err })
           }
@@ -1241,6 +1248,7 @@ export default class extends LlmEngine {
         // now we can build the follow-up request
         const followReq = this.buildResponsesFollowUpRequest(request, responseId, followReqInput, true)
         await this.attachResponsesTools(followReq, model, opts)
+        activeTools = followReq.tools
         
         // debug
         logger.debug('[responsesStream] FOLLOW-UP STREAM REQ', JSON.stringify(followReq, null, 2))
