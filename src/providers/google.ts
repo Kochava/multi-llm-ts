@@ -481,6 +481,10 @@ export default class extends LlmEngine {
     return Object.keys(config).length ? config : undefined
   }
 
+  supportsThoughtSignatures(): boolean {
+    return true
+  }
+
   requiresFlatTextPayload(model: ChatModel, msg: Message) {
     if (msg.thoughtSignature) return false
     else return super.requiresFlatTextPayload(model, msg)

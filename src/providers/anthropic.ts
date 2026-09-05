@@ -9,7 +9,7 @@ import Attachment from '../models/attachment'
 import Message from '../models/message'
 import { Plugin } from '../plugin'
 import { ChatModel, EngineCreateOpts, ModelAnthropic, ModelCapabilities } from '../types/index'
-import { LlmChunk, LlmCompletionOpts, LlmCompletionPayload, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
+import { LlmChunk, LlmCompletionOpts, LlmCompletionPayload, LlmReasoningEffort, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
 import { addUsages, zeroUsage } from '../usage'
 import { pluginParamToJsonSchema } from '../tools'
 import { PluginExecutionResult, PluginParameter } from '../types/plugin'
@@ -40,6 +40,14 @@ export type AnthropicStreamingContext = LlmStreamingContext<MessageParam> & {
   textContentBlock?: string
   firstTextBlockStart: boolean
 }
+
+// claude-<family>-<major>… with major >= 5 (claude-sonnet-5, claude-fable-5-1); not claude-3-5-*
+export const isClaude5PlusModel = (modelId: string): boolean =>
+  /^claude-[a-z]+-(?:[5-9]|\d{2,})(?:-|$)/.test(modelId)
+
+// Claude 5 dropped 'minimal'; everything else maps one to one
+const claude5Effort = (effort: LlmReasoningEffort): string =>
+  effort === 'minimal' ? 'low' : effort
 
 export default class extends LlmEngine {
 
@@ -115,13 +123,16 @@ export default class extends LlmEngine {
 
   getModelCapabilities(model: ModelAnthropic): ModelCapabilities {
 
+    const isClaude5Plus = isClaude5PlusModel(model.id)
+
     const visionGlobs = [
       'claude-3-*',
       'claude-*-4-*',
       'computer-use',
     ]
 
-    const reasoning = model.id === 'claude-3-7-sonnet-thinking' ||
+    const reasoning = isClaude5Plus ||
+      model.id === 'claude-3-7-sonnet-thinking' ||
       model.id.includes('claude-3-7') ||
       model.id.includes('claude-3.7') ||
       minimatch(model.id, 'claude-*-4-*')
@@ -129,6 +140,7 @@ export default class extends LlmEngine {
     const cachingGlobs = [
       'claude-opus-4-*',
       'claude-sonnet-4-*',
+      'claude-haiku-4-*',
       'claude-3-7-sonnet-*',
       'claude-3-5-sonnet-*',
       'claude-3-5-haiku-*',
@@ -138,9 +150,9 @@ export default class extends LlmEngine {
 
     return {
       tools: true,
-      vision: visionGlobs.some((m) => minimatch(model.id, m)),
+      vision: isClaude5Plus || visionGlobs.some((m) => minimatch(model.id, m)),
       reasoning,
-      caching: cachingGlobs.some((m) => minimatch(model.id, m)),
+      caching: isClaude5Plus || cachingGlobs.some((m) => minimatch(model.id, m)),
     }
 
   }
@@ -435,7 +447,20 @@ export default class extends LlmEngine {
   getCompletionOpts(model: ChatModel, opts?: LlmCompletionOpts): Omit<MessageCreateParamsBase, 'model'|'messages'|'stream'|'tools'|'tool_choice'> {
 
     const isThinkingEnabled = model.capabilities?.reasoning && opts?.reasoning !== false;
-    
+
+    // Claude 5+ rejects the budgeted 'enabled' mode: thinking is adaptive, steered by effort
+    if (isClaude5PlusModel(model.id)) {
+      const params: Record<string, unknown> = {
+        max_tokens: opts?.maxTokens ?? this.getMaxTokens(model.id),
+        ...(opts?.temperature ? { temperature: opts.temperature } : {}),
+        ...(opts?.top_k ? { top_k: opts?.top_k } : {} ),
+        ...(opts?.top_p ? { top_p: opts?.top_p } : {} ),
+        ...(isThinkingEnabled ? { thinking: { type: 'adaptive' } } : {}),
+        ...(opts?.reasoningEffort ? { output_config: { effort: claude5Effort(opts.reasoningEffort) } } : {}),
+      }
+      return params as Omit<MessageCreateParamsBase, 'model'|'messages'|'stream'|'tools'|'tool_choice'>
+    }
+
     return {
       max_tokens: opts?.maxTokens ?? this.getMaxTokens(model.id),
       ...(opts?.temperature ? { temperature: opts.temperature } : (isThinkingEnabled ? { temperature: 1.0 } : {})),
