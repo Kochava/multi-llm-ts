@@ -134,6 +134,35 @@ test('Google buildGooglePayload with tool calls', async () => {
   ])
 })
 
+test('Google capabilities cover dotted 3.x releases', async () => {
+  // The globs read 'gemini-3-*', which wants a hyphen after "gemini-3". Every dotted
+  // release has a dot, so 3.1 through 3.8 were all classified as no vision and no
+  // reasoning despite being multimodal thinking models.
+  const google = new Google(config)
+  const caps = (name: string) => google.getModelCapabilities({ name } as any)
+
+  for (const name of [
+    'gemini-3-flash-preview', 'gemini-3-pro-preview',
+    'gemini-3.1-flash-lite', 'gemini-3.5-flash',
+    'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash',
+  ]) {
+    expect(caps(name).vision, `${name} vision`).toBe(true)
+    expect(caps(name).reasoning, `${name} reasoning`).toBe(true)
+  }
+
+  // still scoped: an unrelated major must not be swept in by a bare 'gemini-3*'
+  expect(caps('gemini-30-imaginary').vision).toBe(false)
+  expect(caps('gemini-2.0-flash-001').reasoning).toBe(false)
+
+  // tts models are swept in by the version globs but neither see nor reason,
+  // wherever "tts" sits in the name
+  for (const tts of ['gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview']) {
+    expect(caps(tts).vision, `${tts} vision`).toBe(false)
+    expect(caps(tts).reasoning, `${tts} reasoning`).toBe(false)
+    expect(caps(tts).tools, `${tts} tools`).toBe(false)
+  }
+})
+
 test('Google never sends role tool on the wire', async () => {
   // Gemini's contents accept only 'user' and 'model'. Sending a function result as
   // role 'tool' returns 400 INVALID_ARGUMENT: "Role 'tool' is not supported." This

@@ -63,19 +63,24 @@ export default class extends LlmEngine {
       'gemini-exp-1206',
       'gemini-2.0-flash-thinking-*',
       'gemini-2.5-*',
-      'gemini-3-*',
+      'gemini-3{-,.}*',
     ]
 
     const excludeVisionGlobs = [
       'gemma-3-1b*',
-      '*tts',
+      '*tts*',
     ]
 
     const reasoningGlobs = [
       '*thinking*',
       'gemini-2.5-flash*',
       'gemini-2.5-pro*',
-      'gemini-3-*',
+      'gemini-3{-,.}*',
+    ]
+
+    // speech models are swept in by the version globs but do not reason
+    const excludeReasoningGlobs = [
+      '*tts*',
     ]
 
     if (!model.name) {
@@ -91,7 +96,7 @@ export default class extends LlmEngine {
     const modelName = model.name.replace('models/', '')
     let tools = !modelName.includes('gemma') && !modelName.includes('dialog') && !modelName.includes('tts')
     let vision = visionGlobs.some((m) => minimatch(modelName, m)) && !excludeVisionGlobs.some((m) => minimatch(modelName, m))
-    let reasoning = reasoningGlobs.some((m) => minimatch(modelName, m))
+    let reasoning = reasoningGlobs.some((m) => minimatch(modelName, m)) && !excludeReasoningGlobs.some((m) => minimatch(modelName, m))
 
     // latest aliases have all
     if (modelName.endsWith('latest') && !modelName.match(/\d/)) {
