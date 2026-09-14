@@ -128,10 +128,30 @@ test('Google buildGooglePayload with tool calls', async () => {
       thoughtSignature: 'abcdef',
       functionCall: { name: 'plugin2', args: { param: 'value' } },
     }, { text: 'text' }]},
-    { role: 'tool', parts : [{
+    { role: 'user', parts : [{
       functionResponse: { id: 'plugin2', name: 'plugin2', response: { result: 'ok' } }
     }]},
   ])
+})
+
+test('Google never sends role tool on the wire', async () => {
+  // Gemini's contents accept only 'user' and 'model'. Sending a function result as
+  // role 'tool' returns 400 INVALID_ARGUMENT: "Role 'tool' is not supported." This
+  // broke every tool call on gemini-3.6-flash.
+  const google = new Google(config)
+  const message = new Message('assistant', 'text', undefined, [
+    { id: 'uuid', function: 'plugin2', args: { param: 'value' }, result: { result: 'ok' } }
+  ])
+  const payload = google.buildGooglePayload([ message ], google.buildModel('gemini-3.6-flash'))
+  const roles = payload.map((c: any) => c.role)
+  expect(roles).not.toContain('tool')
+  for (const role of roles) {
+    expect(['user', 'model', 'assistant']).toContain(role)
+  }
+  // the function result is still carried, just in a user turn
+  const fnResponse = payload.find((c: any) => c.parts?.some((p: any) => p.functionResponse))
+  expect(fnResponse).toBeDefined()
+  expect(fnResponse!.role).toBe('user')
 })
 
 test('Google completion', async () => {
@@ -447,7 +467,7 @@ test('Google stream', async () => {
         { functionCall: { name: 'plugin1', args: [] } },
         { functionCall: { name: 'plugin2', args: ['arg'] } }
       ] },
-      { role: 'tool', parts: [
+      { role: 'user', parts: [
         { functionResponse: { id: 'plugin1', name: 'plugin1', response: 'result1' } },
         { functionResponse: { id: 'plugin2', name: 'plugin2', response: 'result2' } }
       ] },
@@ -800,9 +820,9 @@ test('Google syncToolHistoryToThread updates thread from toolHistory by index or
     thread: [
       { role: 'user', parts: [{ text: 'hello' }] },
       { role: 'model', parts: [{ functionCall: { name: 'search', args: {} } }] },
-      { role: 'tool', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'first_result' } } }] },
+      { role: 'user', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'first_result' } } }] },
       { role: 'model', parts: [{ functionCall: { name: 'search', args: {} } }] },
-      { role: 'tool', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'second_result' } } }] },
+      { role: 'user', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'second_result' } } }] },
     ],
     opts: {},
     toolCalls: [],
@@ -890,7 +910,7 @@ test('Google hook modifies tool results before second API call', async () => {
   expect(_Google.GoogleGenAI.prototype.models.generateContentStream).toHaveBeenNthCalledWith(2, expect.objectContaining({
     contents: expect.arrayContaining([
       expect.objectContaining({
-        role: 'tool',
+        role: 'user',
         parts: expect.arrayContaining([
           expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin1', response: { result: '[truncated]' } }) }),
           expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin2', response: 'result2' }) }),
