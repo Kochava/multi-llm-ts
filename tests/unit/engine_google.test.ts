@@ -163,6 +163,32 @@ test('Google capabilities cover dotted 3.x releases', async () => {
   }
 })
 
+test('Google capabilities cover Gemma 4', async () => {
+  // gemma-4-31b-it and gemma-4-26b-a4b-it are the only Gemma models the Gemini API
+  // serves, and it supports images, function calling and thinking on both. The old
+  // rules said no to all three: the vision glob only knew 'gemma-3*', there was no
+  // reasoning glob for Gemma at all, and tools were refused for anything containing
+  // "gemma", which predates Gemma 4's native function calling.
+  const google = new Google(config)
+  const caps = (name: string) => google.getModelCapabilities({ name } as any)
+
+  for (const name of ['gemma-4-31b-it', 'gemma-4-26b-a4b-it']) {
+    expect(caps(name).tools, `${name} tools`).toBe(true)
+    expect(caps(name).vision, `${name} vision`).toBe(true)
+    expect(caps(name).reasoning, `${name} reasoning`).toBe(true)
+  }
+
+  // Gemma 3 is unchanged: no native tool tokens, no thinking, and 1b is text only
+  expect(caps('gemma-3-27b-it').tools).toBe(false)
+  expect(caps('gemma-3-27b-it').reasoning).toBe(false)
+  expect(caps('gemma-3-27b-it').vision).toBe(true)
+  expect(caps('gemma-3-1b-it').vision).toBe(false)
+  expect(caps('gemma-3n-e4b-it').tools).toBe(false)
+
+  // an unrecognised Gemma is still assumed to have no tools
+  expect(caps('gemma-model').tools).toBe(false)
+})
+
 test('Google never sends role tool on the wire', async () => {
   // Gemini's contents accept only 'user' and 'model'. Sending a function result as
   // role 'tool' returns 400 INVALID_ARGUMENT: "Role 'tool' is not supported." This

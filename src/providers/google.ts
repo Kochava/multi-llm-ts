@@ -57,6 +57,7 @@ export default class extends LlmEngine {
 
     const visionGlobs = [
       'gemma-3*',
+      'gemma-4*',
       'gemini-1.5-pro-latest',
       'gemini-1.5-flash-*',
       'gemini-2.0-flash-*',
@@ -73,6 +74,7 @@ export default class extends LlmEngine {
 
     const reasoningGlobs = [
       '*thinking*',
+      'gemma-4*',
       'gemini-2.5-flash*',
       'gemini-2.5-pro*',
       'gemini-3{-,.}*',
@@ -94,7 +96,16 @@ export default class extends LlmEngine {
 
     // calc
     const modelName = model.name.replace('models/', '')
-    let tools = !modelName.includes('gemma') && !modelName.includes('dialog') && !modelName.includes('tts')
+    // Gemma 3 and earlier expose no native tool tokens, so tool use had to be
+    // prompted. Gemma 4 has native function calling and is the only Gemma the
+    // Gemini API serves. Carved out by name rather than by lifting the blanket
+    // exclusion, so an unrecognised Gemma is still assumed to have no tools.
+    const toolCapableGemmaGlobs = [
+      'gemma-4*',
+    ]
+
+    let tools = (!modelName.includes('gemma') || toolCapableGemmaGlobs.some((m) => minimatch(modelName, m)))
+      && !modelName.includes('dialog') && !modelName.includes('tts')
     let vision = visionGlobs.some((m) => minimatch(modelName, m)) && !excludeVisionGlobs.some((m) => minimatch(modelName, m))
     let reasoning = reasoningGlobs.some((m) => minimatch(modelName, m)) && !excludeReasoningGlobs.some((m) => minimatch(modelName, m))
 
