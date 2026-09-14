@@ -57,25 +57,32 @@ export default class extends LlmEngine {
 
     const visionGlobs = [
       'gemma-3*',
+      'gemma-4*',
       'gemini-1.5-pro-latest',
       'gemini-1.5-flash-*',
       'gemini-2.0-flash-*',
       'gemini-exp-1206',
       'gemini-2.0-flash-thinking-*',
       'gemini-2.5-*',
-      'gemini-3-*',
+      'gemini-3{-,.}*',
     ]
 
     const excludeVisionGlobs = [
       'gemma-3-1b*',
-      '*tts',
+      '*tts*',
     ]
 
     const reasoningGlobs = [
       '*thinking*',
+      'gemma-4*',
       'gemini-2.5-flash*',
       'gemini-2.5-pro*',
-      'gemini-3-*',
+      'gemini-3{-,.}*',
+    ]
+
+    // speech models are swept in by the version globs but do not reason
+    const excludeReasoningGlobs = [
+      '*tts*',
     ]
 
     if (!model.name) {
@@ -89,9 +96,18 @@ export default class extends LlmEngine {
 
     // calc
     const modelName = model.name.replace('models/', '')
-    let tools = !modelName.includes('gemma') && !modelName.includes('dialog') && !modelName.includes('tts')
+    // Gemma 3 and earlier expose no native tool tokens, so tool use had to be
+    // prompted. Gemma 4 has native function calling and is the only Gemma the
+    // Gemini API serves. Carved out by name rather than by lifting the blanket
+    // exclusion, so an unrecognised Gemma is still assumed to have no tools.
+    const toolCapableGemmaGlobs = [
+      'gemma-4*',
+    ]
+
+    let tools = (!modelName.includes('gemma') || toolCapableGemmaGlobs.some((m) => minimatch(modelName, m)))
+      && !modelName.includes('dialog') && !modelName.includes('tts')
     let vision = visionGlobs.some((m) => minimatch(modelName, m)) && !excludeVisionGlobs.some((m) => minimatch(modelName, m))
-    let reasoning = reasoningGlobs.some((m) => minimatch(modelName, m))
+    let reasoning = reasoningGlobs.some((m) => minimatch(modelName, m)) && !excludeReasoningGlobs.some((m) => minimatch(modelName, m))
 
     // latest aliases have all
     if (modelName.endsWith('latest') && !modelName.match(/\d/)) {
@@ -214,9 +230,10 @@ export default class extends LlmEngine {
         parts: response.candidates![0].content!.parts,
       })
 
-      // send
+      // send. Gemini rejects role 'tool' with a 400: function responses ride in a
+      // user turn. See buildGooglePayload and buildToolContents for the same rule.
       thread.push({
-        role: 'tool',
+        role: 'user',
         parts: results.map((r) => ({ functionResponse: r }) ),
       })
 
@@ -506,8 +523,11 @@ export default class extends LlmEngine {
         // ignore
       }
 
+      // Gemini's contents accept only 'user' and 'model'; a function response is a
+      // user turn carrying a functionResponse part. Sending role 'tool' returns
+      // 400 INVALID_ARGUMENT: "Role 'tool' is not supported."
       return {
-        role: 'tool',
+        role: 'user',
         parts: [ {
           functionResponse: {
             id: payload.name,
@@ -586,20 +606,21 @@ export default class extends LlmEngine {
 
   syncToolHistoryToThread(context: GoogleStreamingContext): void {
     // sync mutations from toolHistory back to content
-    // Google content format: { role: 'tool', parts: [{ functionResponse: { id, name, response } }] }
+    // Google content format: { role: 'user', parts: [{ functionResponse: { id, name, response } }] }
+    // Matched on the functionResponse part rather than the role: function responses
+    // share the 'user' role with real user turns, and only they carry this part.
     // Google doesn't manage IDs, so we match by name and index position
     let historyIndex = 0
     for (const msg of context.thread) {
-      if (msg.role === 'tool' && msg.parts) {
-        for (const part of msg.parts as Part[]) {
-          const functionResponse = part.functionResponse as FunctionResponse | undefined
-          if (functionResponse && historyIndex < context.toolHistory.length) {
-            const entry = context.toolHistory[historyIndex]
-            if (functionResponse.name === entry.name && functionResponse.response !== entry.result) {
-              functionResponse.response = (typeof entry.result === 'string') ? { result: entry.result } : entry.result
-            }
-            historyIndex++
+      if (!msg.parts) continue
+      for (const part of msg.parts as Part[]) {
+        const functionResponse = part.functionResponse as FunctionResponse | undefined
+        if (functionResponse && historyIndex < context.toolHistory.length) {
+          const entry = context.toolHistory[historyIndex]
+          if (functionResponse.name === entry.name && functionResponse.response !== entry.result) {
+            functionResponse.response = (typeof entry.result === 'string') ? { result: entry.result } : entry.result
           }
+          historyIndex++
         }
       }
     }
@@ -680,9 +701,10 @@ export default class extends LlmEngine {
             parts: assistantParts,
           }
 
-          // tool message with all function responses
+          // tool message with all function responses. Role is 'user', not 'tool':
+          // Gemini rejects 'tool' outright.
           const toolContent: Content = {
-            role: 'tool',
+            role: 'user',
             parts: completed.map(({ tc, result }) => ({
               functionResponse: {
                 id: tc.function,

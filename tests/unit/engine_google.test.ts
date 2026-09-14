@@ -128,10 +128,85 @@ test('Google buildGooglePayload with tool calls', async () => {
       thoughtSignature: 'abcdef',
       functionCall: { name: 'plugin2', args: { param: 'value' } },
     }, { text: 'text' }]},
-    { role: 'tool', parts : [{
+    { role: 'user', parts : [{
       functionResponse: { id: 'plugin2', name: 'plugin2', response: { result: 'ok' } }
     }]},
   ])
+})
+
+test('Google capabilities cover dotted 3.x releases', async () => {
+  // The globs read 'gemini-3-*', which wants a hyphen after "gemini-3". Every dotted
+  // release has a dot, so 3.1 through 3.8 were all classified as no vision and no
+  // reasoning despite being multimodal thinking models.
+  const google = new Google(config)
+  const caps = (name: string) => google.getModelCapabilities({ name } as any)
+
+  for (const name of [
+    'gemini-3-flash-preview', 'gemini-3-pro-preview',
+    'gemini-3.1-flash-lite', 'gemini-3.5-flash',
+    'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash',
+  ]) {
+    expect(caps(name).vision, `${name} vision`).toBe(true)
+    expect(caps(name).reasoning, `${name} reasoning`).toBe(true)
+  }
+
+  // still scoped: an unrelated major must not be swept in by a bare 'gemini-3*'
+  expect(caps('gemini-30-imaginary').vision).toBe(false)
+  expect(caps('gemini-2.0-flash-001').reasoning).toBe(false)
+
+  // tts models are swept in by the version globs but neither see nor reason,
+  // wherever "tts" sits in the name
+  for (const tts of ['gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview']) {
+    expect(caps(tts).vision, `${tts} vision`).toBe(false)
+    expect(caps(tts).reasoning, `${tts} reasoning`).toBe(false)
+    expect(caps(tts).tools, `${tts} tools`).toBe(false)
+  }
+})
+
+test('Google capabilities cover Gemma 4', async () => {
+  // gemma-4-31b-it and gemma-4-26b-a4b-it are the only Gemma models the Gemini API
+  // serves, and it supports images, function calling and thinking on both. The old
+  // rules said no to all three: the vision glob only knew 'gemma-3*', there was no
+  // reasoning glob for Gemma at all, and tools were refused for anything containing
+  // "gemma", which predates Gemma 4's native function calling.
+  const google = new Google(config)
+  const caps = (name: string) => google.getModelCapabilities({ name } as any)
+
+  for (const name of ['gemma-4-31b-it', 'gemma-4-26b-a4b-it']) {
+    expect(caps(name).tools, `${name} tools`).toBe(true)
+    expect(caps(name).vision, `${name} vision`).toBe(true)
+    expect(caps(name).reasoning, `${name} reasoning`).toBe(true)
+  }
+
+  // Gemma 3 is unchanged: no native tool tokens, no thinking, and 1b is text only
+  expect(caps('gemma-3-27b-it').tools).toBe(false)
+  expect(caps('gemma-3-27b-it').reasoning).toBe(false)
+  expect(caps('gemma-3-27b-it').vision).toBe(true)
+  expect(caps('gemma-3-1b-it').vision).toBe(false)
+  expect(caps('gemma-3n-e4b-it').tools).toBe(false)
+
+  // an unrecognised Gemma is still assumed to have no tools
+  expect(caps('gemma-model').tools).toBe(false)
+})
+
+test('Google never sends role tool on the wire', async () => {
+  // Gemini's contents accept only 'user' and 'model'. Sending a function result as
+  // role 'tool' returns 400 INVALID_ARGUMENT: "Role 'tool' is not supported." This
+  // broke every tool call on gemini-3.6-flash.
+  const google = new Google(config)
+  const message = new Message('assistant', 'text', undefined, [
+    { id: 'uuid', function: 'plugin2', args: { param: 'value' }, result: { result: 'ok' } }
+  ])
+  const payload = google.buildGooglePayload([ message ], google.buildModel('gemini-3.6-flash'))
+  const roles = payload.map((c: any) => c.role)
+  expect(roles).not.toContain('tool')
+  for (const role of roles) {
+    expect(['user', 'model', 'assistant']).toContain(role)
+  }
+  // the function result is still carried, just in a user turn
+  const fnResponse = payload.find((c: any) => c.parts?.some((p: any) => p.functionResponse))
+  expect(fnResponse).toBeDefined()
+  expect(fnResponse!.role).toBe('user')
 })
 
 test('Google completion', async () => {
@@ -447,7 +522,7 @@ test('Google stream', async () => {
         { functionCall: { name: 'plugin1', args: [] } },
         { functionCall: { name: 'plugin2', args: ['arg'] } }
       ] },
-      { role: 'tool', parts: [
+      { role: 'user', parts: [
         { functionResponse: { id: 'plugin1', name: 'plugin1', response: 'result1' } },
         { functionResponse: { id: 'plugin2', name: 'plugin2', response: 'result2' } }
       ] },
@@ -800,9 +875,9 @@ test('Google syncToolHistoryToThread updates thread from toolHistory by index or
     thread: [
       { role: 'user', parts: [{ text: 'hello' }] },
       { role: 'model', parts: [{ functionCall: { name: 'search', args: {} } }] },
-      { role: 'tool', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'first_result' } } }] },
+      { role: 'user', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'first_result' } } }] },
       { role: 'model', parts: [{ functionCall: { name: 'search', args: {} } }] },
-      { role: 'tool', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'second_result' } } }] },
+      { role: 'user', parts: [{ functionResponse: { id: 'search', name: 'search', response: { original: 'second_result' } } }] },
     ],
     opts: {},
     toolCalls: [],
@@ -890,7 +965,7 @@ test('Google hook modifies tool results before second API call', async () => {
   expect(_Google.GoogleGenAI.prototype.models.generateContentStream).toHaveBeenNthCalledWith(2, expect.objectContaining({
     contents: expect.arrayContaining([
       expect.objectContaining({
-        role: 'tool',
+        role: 'user',
         parts: expect.arrayContaining([
           expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin1', response: { result: '[truncated]' } }) }),
           expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin2', response: 'result2' }) }),
