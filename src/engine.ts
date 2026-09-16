@@ -268,6 +268,11 @@ export default abstract class LlmEngine {
     return false
   }
 
+  // thought signatures are a Gemini concept; other providers reject unknown fields
+  supportsThoughtSignatures(): boolean {
+    return false
+  }
+
   buildPayload<T = LlmCompletionPayload>(model: ChatModel, thread: Message[] | string, opts?: LlmCompletionOpts): T[] {
 
     if (typeof thread === 'string') {
@@ -291,7 +296,7 @@ export default abstract class LlmEngine {
             type: 'text',
             text: msg.contentForModel,
             ...(this.requiresReasoningContent() && msg.reasoning ? { reasoning_content: msg.reasoning } : {}),
-            ...(msg.thoughtSignature ? { thoughtSignature: msg.thoughtSignature } : {}),
+            ...(this.supportsThoughtSignatures() && msg.thoughtSignature ? { thoughtSignature: msg.thoughtSignature } : {}),
           }],
           ...(msg.reasoningDetails ? { reasoning_details: msg.reasoningDetails } : {}),
         }
@@ -328,7 +333,7 @@ export default abstract class LlmEngine {
                 name: tc.function,
                 arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args),
               },
-              ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {})
+              ...(this.supportsThoughtSignatures() && tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {})
             }
           })
 
