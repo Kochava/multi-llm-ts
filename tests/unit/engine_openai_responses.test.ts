@@ -8,7 +8,7 @@ import LMStudio from '../../src/providers/lmstudio'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
 import { z } from 'zod'
-import { Plugin } from '../../src/plugin'
+import { MultiToolPlugin, Plugin } from '../../src/plugin'
 import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
 
 Plugin2.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result2'))
@@ -1451,4 +1451,135 @@ test('Responses streaming strips unset optionals for a tool granted mid-conversa
   expect(execute).toHaveBeenCalledTimes(1)
   expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
   execute.mockRestore()
+})
+
+// strict mode applies at every depth: a tool whose optional fields live inside
+// array items or nested objects gets nulls there too, and those have to be
+// dropped just like the top-level ones (asana create_tasks in the field)
+class BatchPlugin extends MultiToolPlugin {
+  getName(): string { return 'batch' }
+  getDescription(): string { return 'batch things' }
+  getPreparationDescription(): string { return 'preparing batch' }
+  getRunningDescription(): string { return 'running batch' }
+  handlesTool(name: string): boolean { return name === 'create_tasks' }
+  async getTools(): Promise<any[]> {
+    return [{
+      name: 'create_tasks',
+      description: 'create several tasks',
+      parameters: [{
+        name: 'tasks',
+        type: 'array',
+        description: 'the tasks',
+        required: true,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            parent: { type: 'string' },
+            due_at: { type: 'string', format: 'date-time' },
+            approval_status: { type: 'string', enum: ['pending', 'approved'] },
+            assignee: {
+              type: 'object',
+              properties: { gid: { type: 'string' }, note: { type: 'string' } },
+              required: ['gid'],
+            },
+          },
+          required: ['name'],
+        },
+      }],
+    }]
+  }
+  async execute(): Promise<any> { return { ok: true } }
+}
+
+const runBatchTool = async (args: any) => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'create_tasks', arguments: JSON.stringify(args) }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  const plugin = new BatchPlugin()
+  const execute = vi.spyOn(plugin, 'execute')
+  openai.addPlugin(plugin)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  return (execute.mock.calls[0][1] as any).parameters
+}
+
+test('Responses drops unset optionals nested inside array items', async () => {
+  const params = await runBatchTool({
+    tasks: [{ name: 'Task one', parent: null, due_at: null, approval_status: null }],
+  })
+  expect(params).toStrictEqual({ tasks: [{ name: 'Task one' }] })
+})
+
+test('Responses drops empty strings nested inside array items', async () => {
+  const params = await runBatchTool({
+    tasks: [{ name: 'Task one', parent: '', due_at: '' }],
+  })
+  expect(params).toStrictEqual({ tasks: [{ name: 'Task one' }] })
+})
+
+test('Responses drops unset optionals inside a nested object', async () => {
+  const params = await runBatchTool({
+    tasks: [{ name: 'Task one', assignee: { gid: '123', note: null } }],
+  })
+  expect(params).toStrictEqual({ tasks: [{ name: 'Task one', assignee: { gid: '123' } }] })
+})
+
+test('Responses keeps a null on a required nested field so the tool can report it', async () => {
+  const params = await runBatchTool({
+    tasks: [{ name: null, parent: null }],
+  })
+  expect(params).toStrictEqual({ tasks: [{ name: null }] })
+})
+
+// a tool we could not send as strict never forced the model's hand, so a null
+// there is a value the model chose and must reach the tool untouched
+class LooseSchemaPlugin extends Plugin {
+  getName(): string { return 'loose' }
+  getDescription(): string { return 'loose schema' }
+  getPreparationDescription(): string { return 'preparing loose' }
+  getRunningDescription(): string { return 'running loose' }
+  getParameters(): PluginParameter[] {
+    return [
+      { name: 'query', type: 'string', description: 'q', required: true },
+      { name: 'clear_due_date', type: 'string', description: 'set null to clear', required: false },
+      // additionalProperties forces the tool out of strict mode
+      { name: 'filter', type: 'object', description: 'free-form filter', required: false,
+        properties: { kind: { type: 'string' } }, additionalProperties: true } as any,
+    ]
+  }
+  async execute(): Promise<any> { return { ok: true } }
+}
+
+test('Responses keeps nulls for a tool that was not sent as strict', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'loose',
+      arguments: JSON.stringify({ query: 'scrum', clear_due_date: null }) }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  const plugin = new LooseSchemaPlugin()
+  const execute = vi.spyOn(plugin, 'execute')
+  openai.addPlugin(plugin)
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum', clear_due_date: null })
 })
