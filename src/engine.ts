@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { ChatModel, EngineCreateOpts, Model, ModelCapabilities, ModelMetadata, ModelsList } from './types/index'
-import { LlmResponse, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LlmCompletionPayloadTool, LlmChunk, LlmToolCall, LlmStreamingResponse, LlmStreamingContext, CompletedToolCall, LlmUsage, LlmStream, LlmToolExecutionValidationCallback, LlmToolExecutionValidationResponse, LlmChunkToolAbort, EngineHookName, EngineHookCallback, EngineHookPayloads, NormalizedToolChunk } from './types/llm'
+import { LlmResponse, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LlmCompletionPayloadTool, LlmChunk, LlmToolCall, LlmStreamingResponse, LlmStreamingContext, CompletedToolCall, LlmUsage, LlmStream, LlmToolExecutionValidationCallback, LlmToolExecutionValidationResponse, LlmToolCallGuard, LlmChunkToolAbort, EngineHookName, EngineHookCallback, EngineHookPayloads, NormalizedToolChunk } from './types/llm'
 import { IPlugin, PluginExecutionContext, PluginExecutionUpdate, PluginParameter, PluginExecutionResult, PluginTool, ToolExecutionDelegate } from './types/plugin'
 import { Plugin, ICustomPlugin, MultiToolPlugin } from './plugin'
 import { normalizeToToolDefinition } from './tools'
@@ -737,6 +737,7 @@ export default abstract class LlmEngine {
         args,
         context.opts?.toolExecutionDelegate,
         context.opts?.toolExecutionValidation,
+        context.opts?.toolCallGuard,
       )) {
 
         // Check for abort
@@ -899,7 +900,45 @@ export default abstract class LlmEngine {
     }
   }
 
-  protected async *callTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback): AsyncGenerator<PluginExecutionUpdate> {
+  protected async *callTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback, toolCallGuard?: LlmToolCallGuard): AsyncGenerator<PluginExecutionUpdate> {
+
+    if (!toolCallGuard) {
+      yield* this.executeTool(context, tool, args, delegate, toolExecutionValidation)
+      return
+    }
+
+    let guardedArgs = args
+    if (toolCallGuard.beforeExecute) {
+      let before: { args: any } | { error: string }
+      try {
+        before = await toolCallGuard.beforeExecute(context, tool, args)
+      } catch {
+        before = { error: `Tool ${tool} was not run: its arguments could not be checked.` }
+      }
+      if ('error' in before) {
+        yield { type: 'result', result: { error: before.error } }
+        return
+      }
+      guardedArgs = before.args
+    }
+
+    for await (const update of this.executeTool(context, tool, guardedArgs, delegate, toolExecutionValidation)) {
+      if (update.type !== 'result' || update.canceled || !toolCallGuard.afterExecute) {
+        yield update
+        continue
+      }
+      let result: any
+      try {
+        result = await toolCallGuard.afterExecute(context, tool, guardedArgs, update.result)
+      } catch {
+        result = { error: `Tool ${tool} result was withheld: it could not be checked.` }
+      }
+      yield { ...update, result }
+    }
+
+  }
+
+  private async *executeTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback): AsyncGenerator<PluginExecutionUpdate> {
 
     // get the plugin
     let payload = args
