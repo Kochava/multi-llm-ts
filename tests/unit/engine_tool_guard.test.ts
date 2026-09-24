@@ -1,5 +1,9 @@
 import { vi, beforeEach, expect, test, describe } from 'vitest'
+import { readdirSync, readFileSync } from 'fs'
+import { join } from 'path'
 import { Plugin2, PluginUpdate } from '../mocks/plugins'
+import { PluginExecutionUpdate } from '../../src/types/plugin'
+import { Plugin } from '../../src/plugin'
 import Message from '../../src/models/message'
 import OpenAI from '../../src/providers/openai'
 import { LlmChunk, LlmChunkTool, LlmToolCallGuard } from '../../src/types/llm'
@@ -120,6 +124,62 @@ describe('toolCallGuard', () => {
     expect(afterExecute).toHaveBeenCalledTimes(1)
     expect(afterExecute.mock.calls[0][3]).toBe('result')
     expect(toolMessage.content).toContain('checked result')
+  })
+
+  test('checks a thrown error like a result, since its message reaches the model', async () => {
+    Plugin2.prototype.execute = vi.fn((): Promise<any> => Promise.reject(new Error('duplicate key: email=jane@example.com')))
+    const afterExecute = vi.fn(async (_c: unknown, _t: string, _a: unknown, result: any) => ({ error: result.error.replace('jane@example.com', '[EMAIL]') }))
+    const { toolMessage, completed } = await run({ afterExecute })
+
+    expect(afterExecute).toHaveBeenCalledWith(expect.anything(), 'plugin2', {}, { error: 'duplicate key: email=jane@example.com' })
+    expect(toolMessage.content).toContain('duplicate key: email=[EMAIL]')
+    expect(toolMessage.content).not.toContain('jane@example.com')
+    expect(completed).toMatchObject({ state: 'error', status: 'duplicate key: email=[EMAIL]' })
+  })
+
+  test('checks a result a plugin cancels with, as it may carry partial data', async () => {
+    class PartialPlugin extends Plugin {
+      getName(): string { return 'partial' }
+      getDescription(): string { return 'Partial' }
+      getParameters(): any[] { return [] }
+      getRunningDescription(): string { return 'running' }
+      async *executeWithUpdates(): AsyncGenerator<PluginExecutionUpdate> {
+        yield { type: 'result', result: { rows: ['john@example.com'] }, canceled: true }
+      }
+    }
+    modelToolCall = { name: 'partial', arguments: '{}' }
+    const openai = new OpenAI({ apiKey: '123' })
+    openai.addPlugin(new PartialPlugin())
+    const afterExecute = vi.fn(async () => ({ rows: ['[EMAIL]'] }))
+    const chunks: LlmChunk[] = []
+    for await (const chunk of openai.generate(openai.buildModel('model'), [new Message('user', 'u')], { toolCallGuard: { afterExecute } })) chunks.push(chunk)
+
+    expect(afterExecute).toHaveBeenCalledWith(expect.anything(), 'partial', {}, { rows: ['john@example.com'] })
+    expect(JSON.stringify(chunks)).not.toContain('john@example.com')
+  })
+
+  test('guards the non-streaming path too', async () => {
+    const create = (_openai.default as any).prototype.chat.completions.create
+    create.mockImplementationOnce(() => ({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'tool_1', type: 'function', function: modelToolCall }] }, finish_reason: 'tool_calls' }] }))
+    create.mockImplementationOnce(() => ({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] }))
+    const openai = new OpenAI({ apiKey: '123' })
+    openai.addPlugin(new Plugin2())
+    await openai.complete(openai.buildModel('model'), [new Message('user', 'u')], { toolCallGuard: { afterExecute: async () => ({ owner: '[EMAIL]' }) } })
+
+    const toolMessage = create.mock.calls[1][0].messages.find((m: any) => m.role === 'tool')
+    expect(toolMessage.content).toContain('[EMAIL]')
+    expect(toolMessage.content).not.toContain('example.com')
+  })
+
+  test('is passed on by every provider that runs tools', () => {
+    const dirs = [join(__dirname, '../../src'), join(__dirname, '../../src/providers')]
+    for (const dir of dirs) {
+      for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+        const source = readFileSync(join(dir, file), 'utf8')
+        const calls = source.split('this.callTool(').slice(1).map((rest) => rest.slice(0, rest.indexOf('))')))
+        for (const call of calls) expect(call, `${file}: a callTool call without the guard`).toContain('toolCallGuard')
+      }
+    }
   })
 
   test('leaves everything as it was without a guard', async () => {

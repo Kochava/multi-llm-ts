@@ -922,18 +922,26 @@ export default abstract class LlmEngine {
       guardedArgs = before.args
     }
 
-    for await (const update of this.executeTool(context, tool, guardedArgs, delegate, toolExecutionValidation)) {
-      if (update.type !== 'result' || update.canceled || !toolCallGuard.afterExecute) {
-        yield update
-        continue
-      }
-      let result: any
+    const guardResult = async (result: any): Promise<any> => {
+      if (!toolCallGuard.afterExecute) return result
       try {
-        result = await toolCallGuard.afterExecute(context, tool, guardedArgs, update.result)
+        return await toolCallGuard.afterExecute!(context, tool, guardedArgs, result)
       } catch {
-        result = { error: `Tool ${tool} result was withheld: it could not be checked.` }
+        return { error: `Tool ${tool} result was withheld: it could not be checked.` }
       }
-      yield { ...update, result }
+    }
+
+    try {
+      for await (const update of this.executeTool(context, tool, guardedArgs, delegate, toolExecutionValidation)) {
+        // canceled results too: a plugin may cancel with partial data
+        yield update.type === 'result' ? { ...update, result: await guardResult(update.result) } : update
+      }
+    } catch (error: any) {
+      // a thrown error's message reaches the model as the tool's result, so it is checked like one
+      const cancelled = context.abortSignal?.aborted || (error instanceof Error && error.message === 'Operation cancelled')
+      if (!toolCallGuard.afterExecute || cancelled || error?.type === 'tool_abort') throw error
+      const guarded = await guardResult({ error: error instanceof Error ? error.message : String(error) })
+      throw new Error(typeof guarded?.error === 'string' ? guarded.error : JSON.stringify(guarded))
     }
 
   }
