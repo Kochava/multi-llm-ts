@@ -1637,16 +1637,53 @@ export default class extends LlmEngine {
   // does not set; tools validate against their own schema and reject those,
   // so unset optionals are dropped the way a non-strict model would omit them
   private stripUnsetOptionalArgs(tools: Tool[] | undefined, name: string, args: any): any {
-    if (!args || typeof args !== 'object' || Array.isArray(args)) return args
     const tool = tools?.find((t: any) => t.type === 'function' && t.name === name) as any
-    const properties = tool?.parameters?.properties
-    if (!properties) return args
-    for (const [key, value] of Object.entries(args)) {
-      const schema = properties[key]
-      if (!schema || !this.schemaIsNullable(schema)) continue
-      if (value === null || value === '') delete args[key]
+    // only tools we sent as strict forced the model to fill every property;
+    // for the others a null is what the model chose to send, so it stands
+    if (!tool?.strict) return args
+    if (!tool.parameters) return args
+    return this.stripUnsetInValue(tool.parameters, args)
+  }
+
+  // strict mode forces a value at every depth, so unset optionals also arrive
+  // as null/'' inside nested objects and array items
+  private stripUnsetInValue(schema: any, value: any): any {
+    if (!schema || value === null || typeof value !== 'object') return value
+
+    const structural = this.structuralSchema(schema)
+    if (!structural) return value
+
+    if (Array.isArray(value)) {
+      if (!structural.items) return value
+      for (const entry of value) {
+        this.stripUnsetInValue(structural.items, entry)
+      }
+      return value
     }
-    return args
+
+    const properties = structural.properties
+    if (!properties) return value
+    for (const [key, child] of Object.entries(value)) {
+      const childSchema = properties[key]
+      if (!childSchema) continue
+      if ((child === null || child === '') && this.schemaIsNullable(childSchema)) {
+        delete value[key]
+        continue
+      }
+      if (child && typeof child === 'object') {
+        this.stripUnsetInValue(childSchema, child)
+      }
+    }
+    return value
+  }
+
+  // makeSchemaNullable can wrap the real shape in an anyOf branch
+  private structuralSchema(schema: any): any {
+    if (schema.properties || schema.items) return schema
+    if (Array.isArray(schema.anyOf)) {
+      return schema.anyOf.find((entry: any) => entry && (entry.properties || entry.items))
+    }
+    return undefined
   }
 
   private schemaIsNullable(schema: any): boolean {
