@@ -4,7 +4,7 @@ import { vi, beforeEach, expect, test } from 'vitest'
 import { Plugin1, Plugin2, Plugin3 } from '../mocks/plugins'
 import Message from '../../src/models/message'
 import Attachment from '../../src/models/attachment'
-import OpenAI, { OpenAIStreamingContext } from '../../src/providers/openai'
+import OpenAI, { OpenAIStreamingContext, isGpt5PlusModel } from '../../src/providers/openai'
 import { MultiToolPlugin } from '../../src/plugin'
 import * as _openai from 'openai'
 import { ChatCompletionChunk } from 'openai/resources'
@@ -564,6 +564,35 @@ test('OpenAI verbosity', async () => {
   ], { verbosity: 'low' })
   // @ts-expect-error mock
   expect(_openai.default.prototype.chat.completions.create.mock.calls[1][0].verbosity).toBe('low')
+})
+
+test('OpenAI gpt-6 verbosity', async () => {
+  const openai = new OpenAI(config)
+  await openai.stream(openai.buildModel('gpt-6-luna'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ], { verbosity: 'low', useResponsesApi: false })
+  // @ts-expect-error mock
+  expect(_openai.default.prototype.chat.completions.create.mock.calls[0][0].verbosity).toBe('low')
+})
+
+test('OpenAI capabilities cover every gpt-5+ release', async () => {
+  const openai = new OpenAI(config)
+  for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5.1', 'gpt-5.6-luna', 'gpt-6', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-astra', 'gpt-7']) {
+    expect(openai.getModelCapabilities({ id } as any), id).toStrictEqual({ tools: true, vision: true, reasoning: true, caching: false })
+  }
+  for (const id of ['gpt-4.1', 'gpt-4.5-preview', 'gpt-4o']) {
+    expect(openai.getModelCapabilities({ id } as any).reasoning, id).toBe(false)
+  }
+})
+
+test('isGpt5PlusModel', async () => {
+  for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5.6-sol', 'gpt-6', 'gpt-6-luna', 'gpt-6.1', 'gpt-10']) {
+    expect(isGpt5PlusModel(id), id).toBe(true)
+  }
+  for (const id of ['gpt-4.5', 'gpt-4o', 'gpt-4.1-mini', 'chatgpt-4o', 'gpt-image-1', 'gpt-oss-120b', 'o3']) {
+    expect(isGpt5PlusModel(id), id).toBe(false)
+  }
 })
 
 test('OpenAI structured output', async () => {
