@@ -96,7 +96,7 @@ export default class extends LlmEngine {
 
         // now execute
         let lastUpdate: PluginExecutionResult|undefined = undefined
-        for await (const update of this.callTool({ model: model.id, abortSignal: opts?.abortSignal }, toolCall.function.name, toolCall.function.arguments, opts?.toolExecutionDelegate, opts?.toolExecutionValidation)) {
+        for await (const update of this.callTool({ model: model.id, abortSignal: opts?.abortSignal }, toolCall.function.name, toolCall.function.arguments, opts?.toolExecutionDelegate, opts?.toolExecutionValidation, opts?.toolCallGuard)) {
           if (update.type === 'result') {
             lastUpdate = update
           }
