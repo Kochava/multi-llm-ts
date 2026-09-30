@@ -1099,6 +1099,29 @@ test('gpt-5.6 routes to the Responses API without an explicit opt-in', async () 
   )
 })
 
+test('gpt-6 routes to the Responses API without an explicit opt-in', async () => {
+  const openai = new OpenAI(config)
+
+  // gpt-6-luna rejects function tools with a reasoning effort on chat/completions
+  await openai.complete(openai.buildModel('gpt-6-luna'), [
+    new Message('user', 'prompt'),
+  ], { reasoningEffort: 'low' })
+
+  expect(_openai.default.prototype.responses.create).toHaveBeenCalledWith(
+    expect.objectContaining({ model: 'gpt-6-luna', reasoning: { effort: 'low' } })
+  )
+})
+
+test('gpt-5.6 and every later release require the Responses API', async () => {
+  const openai = new OpenAI(config)
+  for (const id of ['gpt-5.6', 'gpt-5.6-luna', 'gpt-5.7', 'gpt-5.10', 'gpt-6', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-7']) {
+    expect(openai.modelRequiresResponsesApi(openai.buildModel(id)), id).toBe(true)
+  }
+  for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5.1', 'gpt-5.5', 'gpt-4.1', 'gpt-4o']) {
+    expect(openai.modelRequiresResponsesApi(openai.buildModel(id)), id).toBe(false)
+  }
+})
+
 test('Responses request carries the reasoning effort', async () => {
   const openai = new OpenAI(config)
 

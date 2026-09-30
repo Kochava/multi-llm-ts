@@ -34,7 +34,7 @@ import LMStudio from './providers/lmstudio'
 import Meta from './providers/meta'
 import MistralAI from './providers/mistralai'
 import Ollama, { OllamaMessage } from './providers/ollama'
-import OpenAI from './providers/openai'
+import OpenAI, { isGpt5PlusModel } from './providers/openai'
 import OpenRouter from './providers/openrouter'
 import XAI, { xAIBaseURL } from './providers/xai'
 
@@ -58,6 +58,7 @@ const defaultCapabilities: { capabilities: ModelCapabilities } = {
 
 export {
   logger,
+  isGpt5PlusModel,
   Plugin,
   CustomToolPlugin,
   MultiToolPlugin,

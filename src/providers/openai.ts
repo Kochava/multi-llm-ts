@@ -29,6 +29,14 @@ type ResponsesSchemaConversion = {
 
 const defaultBaseUrl = PROVIDER_BASE_URLS.openai!
 
+// gpt-<major>[.<minor>]… with major >= 5 (gpt-5, gpt-5.6-luna, gpt-6-sol); not gpt-4.5
+export const isGpt5PlusModel = (modelId: string): boolean =>
+  /^gpt-(?:[5-9]|\d{2,})(?:[.-]|$)/.test(modelId)
+
+// gpt-5.6 and every later release (gpt-6-luna, gpt-6.1, gpt-7…)
+const isGpt56PlusModel = (modelId: string): boolean =>
+  /^gpt-(?:5\.(?:[6-9]|\d{2,})|(?:[6-9]|\d{2,})(?:\.\d+)?)(?:-|$)/.test(modelId)
+
 //
 // https://platform.openai.com/docs/api-reference/introduction
 // 
@@ -73,7 +81,6 @@ export default class extends LlmEngine {
       'chatgpt-4o',
       'gpt-4.1*',
       'gpt-4.5*',
-      'gpt-5*',
       'o1*',
       'o3*',
       'o4*',
@@ -89,8 +96,8 @@ export default class extends LlmEngine {
 
     return {
       tools: !modelId.includes('chat') && !modelId.startsWith('o1-mini'),
-      vision: visionGlobs.some((m) => minimatch(modelId, m)) && !excludeVisionGlobs.some((m) => minimatch(modelId, m)),
-      reasoning: modelId.startsWith('o') || modelId.startsWith('gpt-5'),
+      vision: (isGpt5PlusModel(modelId) || visionGlobs.some((m) => minimatch(modelId, m))) && !excludeVisionGlobs.some((m) => minimatch(modelId, m)),
+      reasoning: modelId.startsWith('o') || isGpt5PlusModel(modelId),
       caching: false,
     }
   }
@@ -125,10 +132,10 @@ export default class extends LlmEngine {
   }
 
   modelSupportsVerbosity(model: ChatModel): boolean {
-    return model.id.startsWith('gpt-5')
+    return isGpt5PlusModel(model.id)
   } 
 
-  // gpt-5.6 rejects function tools combined with a reasoning_effort on
+  // gpt-5.6 and later reject function tools combined with a reasoning_effort on
   // /v1/chat/completions ("To use function tools, use /v1/responses or set
   // reasoning_effort to 'none'"), so it has to go through the Responses API.
   modelRequiresResponsesApi(model: ChatModel): boolean {
@@ -138,7 +145,7 @@ export default class extends LlmEngine {
     if (this.getId() !== 'openai') {
       return false
     }
-    return ['o3-pro*', 'codex*', 'gpt-5.6*'].some((m) => minimatch(model.id, m))
+    return isGpt56PlusModel(model.id) || ['o3-pro*', 'codex*'].some((m) => minimatch(model.id, m))
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
