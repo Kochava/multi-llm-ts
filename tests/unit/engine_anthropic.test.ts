@@ -119,6 +119,10 @@ test('Anthropic max tokens', async () => {
   expect(anthropic.getMaxTokens('claude-sonnet-5')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-fable-5')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-mythos-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-sonnet-5-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-opus-5-5')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-fable-5-1')).toBe(64000)
+  expect(anthropic.getMaxTokens('claude-sonnet-6')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-haiku-4-5')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-haiku-4-5-20251001')).toBe(64000)
   expect(anthropic.getMaxTokens('claude-opus-4-latest')).toBe(32000)
@@ -561,6 +565,19 @@ test('Anthropic Claude 5 adaptive thinking', async () => {
   const third = (_Anthropic.default.prototype.messages.create as any).mock.calls[2][0]
   expect(third.thinking).toBeUndefined()
   expect(third.output_config).toEqual({ effort: 'high' })
+})
+
+test('Anthropic Sonnet 5.5 gets Claude 5 capabilities and adaptive thinking', async () => {
+  const anthropic = new Anthropic(config)
+  expect(anthropic.getModelCapabilities({ id: 'claude-sonnet-5-5' } as any)).toStrictEqual({ tools: true, vision: true, reasoning: true, caching: true })
+  const model = anthropic.buildModel('claude-sonnet-5-5')
+  model.capabilities = anthropic.getModelCapabilities({ id: 'claude-sonnet-5-5' } as any)
+  await anthropic.stream(model, [ new Message('system', 'instruction'), new Message('user', 'prompt') ], { reasoning: true, reasoningEffort: 'high' })
+  const req = (_Anthropic.default.prototype.messages.create as any).mock.calls[0][0]
+  expect(req.model).toBe('claude-sonnet-5-5')
+  expect(req.thinking).toEqual({ type: 'adaptive' })
+  expect(req.output_config).toEqual({ effort: 'high' })
+  expect(req.max_tokens).toBe(64000)
 })
 
 test('Anthropic thinking', async () => {
