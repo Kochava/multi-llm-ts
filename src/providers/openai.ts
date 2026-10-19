@@ -286,6 +286,7 @@ export default class extends LlmEngine {
           functionToolCall.function.name, args,
           opts?.toolExecutionDelegate,
           opts?.toolExecutionValidation,
+          opts?.toolCallGuard,
         )) {
           if (update.type === 'result') {
             lastUpdate = update
@@ -725,6 +726,7 @@ export default class extends LlmEngine {
             toolCall.name, args,
             opts?.toolExecutionDelegate,
             opts?.toolExecutionValidation,
+            opts?.toolCallGuard,
           )) {
             if (update.type === 'result') {
               lastUpdate = update
@@ -944,7 +946,7 @@ export default class extends LlmEngine {
           const execution = (async (): Promise<ResponsesToolExecutionResult> => {
             try {
               let lastUpdate: PluginExecutionResult|undefined = undefined
-              for await (const update of this.callTool({ model: model.id, abortSignal: opts?.abortSignal }, toolCall.name, args, opts?.toolExecutionDelegate, opts?.toolExecutionValidation)) {
+              for await (const update of this.callTool({ model: model.id, abortSignal: opts?.abortSignal }, toolCall.name, args, opts?.toolExecutionDelegate, opts?.toolExecutionValidation, opts?.toolCallGuard)) {
 
                 if (opts?.abortSignal?.aborted) {
                   enqueueToolChunk({

@@ -240,6 +240,7 @@ export default class extends LlmEngine {
           toolCall.name, toolCall.input,
           opts?.toolExecutionDelegate,
           opts?.toolExecutionValidation,
+          opts?.toolCallGuard,
         )) {
           if (update.type === 'result') {
             lastUpdate = update

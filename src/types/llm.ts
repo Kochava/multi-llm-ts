@@ -184,11 +184,25 @@ export type LlmToolExecutionValidationResponse = {
 
 export type LlmToolExecutionValidationCallback = (context: PluginExecutionContext, tool: string, args: any) => Promise<LlmToolExecutionValidationResponse>
 
+/**
+ * Inspects a tool call on its way in and its result on its way out, for every
+ * provider and every kind of tool (plugin, multi-tool, delegate).
+ * beforeExecute runs before toolExecutionValidation and may rewrite the arguments,
+ * or refuse the call with an error the model sees as the tool's result.
+ * afterExecute sees only the final result and returns what the model gets instead.
+ * A hook that throws withholds the call or its result: the raw value never passes.
+ */
+export type LlmToolCallGuard = {
+  beforeExecute?: (context: PluginExecutionContext, tool: string, args: any) => Promise<{ args: any } | { error: string }>
+  afterExecute?: (context: PluginExecutionContext, tool: string, args: any, result: any) => Promise<any>
+}
+
 export type LlmCompletionOpts = {
   tools?: boolean
   toolChoice?: LlmToolChoice
   toolExecutionDelegate?: ToolExecutionDelegate
   toolExecutionValidation?: LlmToolExecutionValidationCallback
+  toolCallGuard?: LlmToolCallGuard
   toolCallsInThread?: boolean
   caching?: boolean
   visionFallbackModel?: ChatModel
