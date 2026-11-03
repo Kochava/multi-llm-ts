@@ -233,7 +233,7 @@ export default class extends LlmEngine {
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts(context.model, context.opts),
       stream: true,
-    })
+    }, this.streamRequestOptions(context.opts, this.client.baseURL))
 
     // done
     return stream

@@ -382,7 +382,7 @@ test('OpenAI stream', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
   expect(stream.controller).toBeDefined()
   let response = ''
@@ -417,7 +417,7 @@ test('OpenAI stream', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(lastMsg?.done).toBe(true)
   expect(response).toBe('response')
   expect(Plugin1.prototype.execute).toHaveBeenCalledWith({ model: 'model' }, [])
@@ -443,26 +443,26 @@ test('OpenAI stream tool choice option', async () => {
   ], { toolChoice: { type: 'none' } })
   expect(_openai.default.prototype.chat.completions.create).toHaveBeenNthCalledWith(1, expect.objectContaining({
     tool_choice: 'none',
-  }), {})
+  }), { timeout: 90000 })
   await openai.stream(openai.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'required' } })
   expect(_openai.default.prototype.chat.completions.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
     tool_choice: 'required',
-  }), {})
+  }), { timeout: 90000 })
   const { stream, context } = await openai.stream(openai.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'tool', name: 'plugin1' } })
   expect(_openai.default.prototype.chat.completions.create).toHaveBeenNthCalledWith(3, expect.objectContaining({
     tool_choice: { type: 'function', function: { name: 'plugin1' } },
-  }), {})
+  }), { timeout: 90000 })
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   for await (const chunk of stream) { for await (const msg of openai.processNativeChunk(chunk, context)) {/* empty */ } }
   expect(_openai.default.prototype.chat.completions.create).toHaveBeenNthCalledWith(4, expect.objectContaining({
     tool_choice: 'auto',
-  }), {})
+  }), { timeout: 90000 })
 })
 
 test('OpenAI stream tools disabled', async () => {
@@ -486,7 +486,7 @@ test('OpenAI stream tools disabled', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(Plugin2.prototype.execute).not.toHaveBeenCalled()
 })
 
@@ -509,7 +509,7 @@ test('OpenAI stream no tools for o1', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
   expect(stream.controller).toBeDefined()
 })
@@ -530,7 +530,7 @@ test('OpenAI stream without tools', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
 })
 
@@ -893,7 +893,7 @@ test('OpenAI hook modifies tool results before second API call', async () => {
       { role: 'tool', content: '"[truncated]"', name: 'plugin1', tool_call_id: '1' },
       { role: 'tool', content: expect.not.stringContaining('[truncated]'), name: 'plugin2', tool_call_id: '2' }
     ])
-  }), {})
+  }), { timeout: 90000 })
 })
 
 test('OpenAI Responses stream refreshes tools after a tool enables new capabilities', async () => {
@@ -1050,4 +1050,13 @@ test('OpenAI stream preserves text content before tool calls', async () => {
       })
     ])
   }), expect.any(Object))
+})
+
+test('OpenAI stream passes abort signal and headers timeout, completion does not', async () => {
+  const openai = new OpenAI(config)
+  const abortSignal = new AbortController().signal
+  await openai.stream(openai.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(_openai.default.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.any(Object), { signal: abortSignal, timeout: 90000 })
+  await openai.complete(openai.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(_openai.default.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.any(Object), {})
 })

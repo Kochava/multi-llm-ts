@@ -572,7 +572,7 @@ test('OpenAI Responses API stream without tools', async () => {
     instructions: 'instruction',
     input: [ { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'prompt', }] } ],
     stream: true
-  })
+  }, { timeout: 90000 })
 
   expect(context.responsesApi).toBe(true)
   expect(stream).toBeDefined()
@@ -659,7 +659,7 @@ test('OpenAI Responses API stream with tools', async () => {
     stream: true,
     tools: expect.any(Array),
     tool_choice: 'auto'
-  })
+  }, { timeout: 90000 })
 
   // Second call (follow-up)
   expect(_openai.default.prototype.responses.create).toHaveBeenNthCalledWith(2, {
@@ -676,7 +676,7 @@ test('OpenAI Responses API stream with tools', async () => {
     tools: expect.any(Array),
     tool_choice: 'auto',
     stream: true
-  })
+  }, { timeout: 90000 })
 
   expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'gpt-4' }, ['arg'])
   expect(response).toBe('response1response2')
@@ -774,7 +774,7 @@ test('OpenAI Responses API stream calls beforeToolCallsResponse hook before foll
       call_id: 'call_123',
       output: JSON.stringify({ hooked: 'result2', round: 1 }),
     }],
-  }))
+  }), { timeout: 90000 })
 })
 
 test('OpenAI Responses API stream starts tool execution when function call item is done', async () => {
@@ -946,7 +946,7 @@ test('OpenAI Responses API stream starts tool execution when function call item 
     tools: expect.any(Array),
     tool_choice: 'auto',
     stream: true
-  })
+  }, { timeout: 90000 })
 })
 
 test('OpenAI Responses API stream emits preparing updates with partial tool args', async () => {
@@ -1059,7 +1059,8 @@ test('OpenAI Responses API tool choice', async () => {
         type: 'function',
         name: 'plugin2'
       }
-    })
+    }),
+    { timeout: 90000 }
   )
 })
 
@@ -1206,7 +1207,7 @@ test('Responses streaming follow-up carries instructions and reasoning effort', 
     instructions: 'instruction',
     reasoning: { effort: 'low' },
     tools: expect.any(Array),
-  }))
+  }), { timeout: 90000 })
 })
 
 test('Responses request carries structured output as text format', async () => {
@@ -1605,4 +1606,13 @@ test('Responses keeps nulls for a tool that was not sent as strict', async () =>
 
   expect(execute).toHaveBeenCalledTimes(1)
   expect(execute.mock.calls[0][1]).toStrictEqual({ query: 'scrum', clear_due_date: null })
+})
+
+test('OpenAI Responses API stream passes abort signal and headers timeout, non-streaming does not', async () => {
+  const openai = new OpenAI(config)
+  const abortSignal = new AbortController().signal
+  await openai.stream(openai.buildModel('gpt-4'), [ new Message('user', 'prompt') ], { useResponsesApi: true, tools: false, abortSignal })
+  expect(_openai.default.prototype.responses.create).toHaveBeenLastCalledWith(expect.objectContaining({ stream: true }), { signal: abortSignal, timeout: 90000 })
+  await openai.complete(openai.buildModel('gpt-4'), [ new Message('user', 'prompt') ], { useResponsesApi: true, tools: false, abortSignal })
+  expect(vi.mocked(_openai.default.prototype.responses.create).mock.lastCall).toHaveLength(1)
 })

@@ -73,6 +73,13 @@ export default abstract class LlmEngine {
    */
   abstract stop(stream: any): Promise<void>
 
+  // per-request options for SDKs whose timeout only covers the wait for response headers (Anthropic, OpenAI, Groq):
+  // a lost request is retried fast. Loopback servers may hold headers while processing the prompt, so get no default.
+  streamRequestOptions(opts: LlmCompletionOpts|undefined, baseURL: string|undefined): { signal?: AbortSignal, timeout?: number } {
+    const timeout = opts?.timeout || (/^https?:\/\/(localhost|127\.|\[::1\])/i.test(baseURL ?? '') ? undefined : 90 * 1000)
+    return { ...(opts?.abortSignal ? { signal: opts.abortSignal } : {}), ...(timeout ? { timeout } : {}) }
+  }
+
   protected addTextToPayload(model: ChatModel, message: Message, attachment: Attachment, payload: LlmCompletionPayload, opts?: LlmCompletionOpts): void {
 
     if (Array.isArray(payload.content)) {

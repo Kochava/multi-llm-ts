@@ -183,7 +183,7 @@ test('MistralAI stream with tools', async () => {
     ],
     toolChoice: 'auto',
     tools: expect.any(Array),
-  })
+  }, { fetchOptions: { signal: undefined } })
   expect(stream.controller).toBeDefined()
   let response = ''
   let lastMsg: LlmChunkContent|null = null
@@ -211,7 +211,7 @@ test('MistralAI stream with tools', async () => {
     ],
     toolChoice: 'auto',
     tools: expect.any(Array),
-  }))
+  }), { fetchOptions: { signal: undefined } })
   expect(lastMsg?.done).toBe(true)
   expect(response).toBe('response')
   expect(Plugin1.prototype.execute).toHaveBeenCalledWith({ model: 'model' }, [])
@@ -241,7 +241,7 @@ test('MistralAI stream tool choice option', async () => {
   ], { toolChoice: { type: 'none' } })
   expect(Mistral.prototype.chat.stream).toHaveBeenLastCalledWith(expect.objectContaining({
     toolChoice: 'none',
-  }))
+  }), { fetchOptions: { signal: undefined } })
   await mistralai.stream({
     id: 'model', name: 'model', capabilities: mistralai.getModelCapabilities({
       id: 'model', capabilities: { functionCalling: true },
@@ -252,7 +252,7 @@ test('MistralAI stream tool choice option', async () => {
   ], { toolChoice: { type: 'required' } })
   expect(Mistral.prototype.chat.stream).toHaveBeenLastCalledWith(expect.objectContaining({
     toolChoice: 'required',
-  }))
+  }), { fetchOptions: { signal: undefined } })
   const { stream, context } = await mistralai.stream({
     id: 'model', name: 'model', capabilities: mistralai.getModelCapabilities({
       id: 'model', capabilities: { functionCalling: true },
@@ -263,12 +263,12 @@ test('MistralAI stream tool choice option', async () => {
   ], { toolChoice: { type: 'tool', name: 'plugin1' } })
   expect(Mistral.prototype.chat.stream).toHaveBeenLastCalledWith(expect.objectContaining({
     toolChoice: { type: 'function', function: { name: 'plugin1' } },
-  }))
+  }), { fetchOptions: { signal: undefined } })
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   for await (const chunk of stream) { for await (const msg of mistralai.processNativeChunk(chunk, context)) {/* empty */ } }
   expect(Mistral.prototype.chat.stream).toHaveBeenLastCalledWith(expect.objectContaining({
     toolChoice: 'auto',
-  }))
+  }), { fetchOptions: { signal: undefined } })
 })
 
 test('MistralAI stream without tools', async () => {
@@ -291,7 +291,7 @@ test('MistralAI stream without tools', async () => {
       { role: 'user', content: [{ type: 'text', text: 'prompt' }] }
     ],
     topP: 4,
-  })
+  }, { fetchOptions: { signal: undefined } })
   expect(stream).toBeDefined()
 })
 
@@ -311,7 +311,7 @@ test('MistralAI stream without tools', async () => {
       { role: 'system', content: 'instruction' },
       { role: 'user', content: [{ type: 'text', text: 'prompt' }] }
     ],
-  })
+  }, { fetchOptions: { signal: undefined } })
   expect(stream).toBeDefined()
 })
 
@@ -592,7 +592,7 @@ test('MistralAI hook modifies tool results before second API call', async () => 
       expect.objectContaining({ role: 'tool', toolCallId: '1', content: '"[truncated]"' }),
       expect.objectContaining({ role: 'tool', toolCallId: '2', content: '"result2"' }),
     ])
-  }))
+  }), { fetchOptions: { signal: undefined } })
 })
 
 test('MistralAI stream preserves text content before tool calls', async () => {
@@ -640,5 +640,12 @@ test('MistralAI stream preserves text content before tool calls', async () => {
         toolCalls: expect.any(Array)
       })
     ])
-  }))
+  }), { fetchOptions: { signal: undefined } })
+})
+
+test('MistralAI stream passes abort signal', async () => {
+  const mistralai = new MistralAI(config)
+  const abortSignal = new AbortController().signal
+  await mistralai.stream(mistralai.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(Mistral.prototype.chat.stream).toHaveBeenLastCalledWith(expect.any(Object), { fetchOptions: { signal: abortSignal } })
 })

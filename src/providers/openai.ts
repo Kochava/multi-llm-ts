@@ -417,7 +417,7 @@ export default class extends LlmEngine {
       ...await this.getToolsOpts(context.model, context.opts),
       stream_options: { include_usage: context.opts.usage || false },
       stream: true,
-    }, this.getRequestOptions(context.model, context.opts))
+    }, this.streamRequestOptions(context.opts, this.client.baseURL))
     
     // done
     return stream
@@ -1456,7 +1456,7 @@ export default class extends LlmEngine {
   // forwards the same request options (timeout) the chat/completions path
   // passes; only added when set so call expectations stay single-argument
   protected createResponse(request: ResponseCreateParams, model: ChatModel, opts?: LlmCompletionOpts): ReturnType<OpenAI['responses']['create']> {
-    const requestOptions = this.getRequestOptions(model, opts)
+    const requestOptions = request.stream ? this.streamRequestOptions(opts, this.client.baseURL) : this.getRequestOptions(model, opts)
     return Object.keys(requestOptions).length
       ? this.client.responses.create(request, requestOptions)
       : this.client.responses.create(request)

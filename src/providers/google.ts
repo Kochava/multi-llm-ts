@@ -333,7 +333,10 @@ export default class extends LlmEngine {
     const response = await this.client.models.generateContentStream({
       model: context.model.id,
       contents: context.thread,
-      config: await this.getGenerationConfig(context.model, context.opts),
+      config: {
+        ...await this.getGenerationConfig(context.model, context.opts),
+        ...(context.opts.abortSignal ? { abortSignal: context.opts.abortSignal } : {}),
+      },
     })
 
     // done
