@@ -139,9 +139,8 @@ export default abstract class LlmEngine {
 
   async *generate(model: ChatModel|string, thread: Message[], opts?: LlmCompletionOpts): AsyncIterable<LlmChunk> {
 
-    // eslint-disable-next-line no-useless-catch
     try {
-      
+
       // init the streaming
       const chatModel = this.toModel(model)
       const response: LlmStreamingResponse = await this.stream(chatModel, thread, opts)
@@ -214,6 +213,8 @@ export default abstract class LlmEngine {
       }
 
     } catch (error) {
+      // a request cancelled by the caller ends quietly, like the between-chunks abort
+      if (opts?.abortSignal?.aborted) return
       // Re-throw the error to ensure it propagates to the caller
       // This is critical for async generators - errors need explicit handling
       throw error

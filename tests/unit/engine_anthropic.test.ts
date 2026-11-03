@@ -390,6 +390,31 @@ test('Anthropic computer-use stream passes abort signal and headers timeout', as
   expect(create).toHaveBeenCalledWith(expect.any(Object), { signal: abortSignal, timeout: 90000 })
 })
 
+test('Anthropic generate ends quietly when aborted before headers', async () => {
+  const anthropic = new Anthropic(config)
+  const controller = new AbortController()
+  vi.mocked(_Anthropic.default.prototype.messages.create).mockImplementationOnce(((_body: any, options: any) => new Promise((_, reject) => {
+    options.signal.addEventListener('abort', () => reject(new Error('Request was aborted.')))
+  })) as any)
+  const chunks: LlmChunk[] = []
+  const done = (async () => {
+    for await (const chunk of anthropic.generate(anthropic.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal: controller.signal })) chunks.push(chunk)
+  })()
+  await vi.waitFor(() => expect(_Anthropic.default.prototype.messages.create).toHaveBeenCalled())
+  controller.abort()
+  await expect(done).resolves.toBeUndefined()
+  expect(chunks).toEqual([])
+})
+
+test('Anthropic generate rethrows errors when not aborted', async () => {
+  const anthropic = new Anthropic(config)
+  vi.mocked(_Anthropic.default.prototype.messages.create).mockImplementationOnce((() => Promise.reject(new Error('overloaded'))) as any)
+  const done = (async () => {
+    for await (const chunk of anthropic.generate(anthropic.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal: new AbortController().signal })) expect(chunk).toBeUndefined()
+  })()
+  await expect(done).rejects.toThrow('overloaded')
+})
+
 test('Anthropic stream tool choice option', async () => {
   const anthropic = new Anthropic(config)
   anthropic.addPlugin(new Plugin1())
