@@ -428,7 +428,7 @@ export default class extends LlmEngine {
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts<MessageCreateParams>(context.model, context.opts),
       stream: true,
-    }))
+    }), this.getStreamRequestOptions(context.opts))
   }
 
   async doStreamBeta(context: AnthropicStreamingContext): Promise<LlmStream> {
@@ -441,7 +441,12 @@ export default class extends LlmEngine {
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts<MessageCreateParams>(context.model, context.opts),
       stream: true,
-    }))
+    }), this.getStreamRequestOptions(context.opts))
+  }
+
+  // SDK timeout only covers the wait for response headers, so a lost streaming request is retried fast
+  getStreamRequestOptions(opts?: LlmCompletionOpts): { signal?: AbortSignal, timeout: number } {
+    return { signal: opts?.abortSignal, timeout: opts?.timeout || 90 * 1000 }
   }
 
   getCompletionOpts(model: ChatModel, opts?: LlmCompletionOpts): Omit<MessageCreateParamsBase, 'model'|'messages'|'stream'|'tools'|'tool_choice'> {

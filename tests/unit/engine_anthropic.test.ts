@@ -268,7 +268,7 @@ test('Anthropic stream', async () => {
     tool_choice: { type: 'auto' },
     top_k: 4,
     stream: true,
-  })
+  }, expect.any(Object))
   expect(stream.controller).toBeDefined()
   let response = ''
   let lastMsg: LlmChunkContent|null = null
@@ -299,7 +299,7 @@ test('Anthropic stream', async () => {
     tool_choice: { type: 'auto' },
     top_k: 4,
     stream: true,
-  })
+  }, expect.any(Object))
   // Verify messages.create was only called twice (initial + after tool execution)
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenCalledTimes(2)
   expect(lastMsg?.done).toBe(true)
@@ -372,6 +372,24 @@ test('Anthropic tool schema conversion', async () => {
   expect(schema.required).toStrictEqual(['param1', 'param3'])
 })
 
+test('Anthropic stream passes abort signal and headers timeout', async () => {
+  const anthropic = new Anthropic(config)
+  const abortSignal = new AbortController().signal
+  await anthropic.stream(anthropic.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.any(Object), { signal: abortSignal, timeout: 90000 })
+  await anthropic.stream(anthropic.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal, timeout: 5000 })
+  expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.any(Object), { signal: abortSignal, timeout: 5000 })
+})
+
+test('Anthropic computer-use stream passes abort signal and headers timeout', async () => {
+  const anthropic = new Anthropic(config)
+  const create = vi.fn(() => ({}))
+  anthropic.client.beta = { messages: { create } } as any
+  const abortSignal = new AbortController().signal
+  await anthropic.stream(anthropic.buildModel('computer-use'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(create).toHaveBeenCalledWith(expect.any(Object), { signal: abortSignal, timeout: 90000 })
+})
+
 test('Anthropic stream tool choice option', async () => {
   const anthropic = new Anthropic(config)
   anthropic.addPlugin(new Plugin1())
@@ -383,26 +401,26 @@ test('Anthropic stream tool choice option', async () => {
   ], { toolChoice: { type: 'none'} })
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: { type: 'none' },
-  }))
+  }), expect.any(Object))
   await anthropic.stream(anthropic.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'required'} })
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: { type: 'any' },
-  }))
+  }), expect.any(Object))
   const { stream, context } = await anthropic.stream(anthropic.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'tool', name: 'plugin1' } })
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: { type: 'tool', name: 'plugin1' },
-  }))
+  }), expect.any(Object))
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   for await (const chunk of stream) { for await (const msg of anthropic.processNativeChunk(chunk, context)) {/* empty */ } }
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: { type: 'auto' },
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream with tools caching', async () => {
@@ -430,7 +448,7 @@ test('Anthropic stream with tools caching', async () => {
       { name: 'plugin6', description: expect.any(String), input_schema: expect.any(Object), cache_control: undefined },
       { name: 'plugin7', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
     ]
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream with system caching', async () => {
@@ -442,7 +460,7 @@ test('Anthropic stream with system caching', async () => {
   expect(_Anthropic.default.prototype.messages.create).toHaveBeenNthCalledWith(1, expect.objectContaining({
     system: [ { type: 'text', text: 'instruction', cache_control: { type: 'ephemeral' } } ],
     messages: [ { role: 'user', content: [{ type: 'text', text: 'prompt', }] } ],
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream with tools and system caching 1', async () => {
@@ -462,7 +480,7 @@ test('Anthropic stream with tools and system caching 1', async () => {
       { name: 'plugin2', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
       { name: 'plugin3', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
     ]
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream with tools and system caching 2', async () => {
@@ -484,7 +502,7 @@ test('Anthropic stream with tools and system caching 2', async () => {
       { name: 'plugin3', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
       { name: 'plugin4', description: expect.any(String), input_schema: expect.any(Object), cache_control: undefined },
     ]
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream with tools and system caching 3', async () => {
@@ -506,7 +524,7 @@ test('Anthropic stream with tools and system caching 3', async () => {
       { name: 'plugin3', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
       { name: 'plugin4', description: expect.any(String), input_schema: expect.any(Object), cache_control: { type: 'ephemeral' } },
     ]
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic stream tools disabled', async () => {
@@ -525,7 +543,7 @@ test('Anthropic stream tools disabled', async () => {
     messages: [ { role: 'user', content: [{ type: 'text', text: 'prompt' }] } ],
     top_k: 4,
     stream: true,
-  })
+  }, expect.any(Object))
   expect(Plugin2.prototype.execute).not.toHaveBeenCalled()
 })
 
@@ -542,7 +560,7 @@ test('Anthropic stream without tools', async () => {
     messages: [ { role: 'user', content: [{ type: 'text', text: 'prompt' }] }, ],
     top_p: 4,
     stream: true,
-  })
+  }, expect.any(Object))
   expect(stream).toBeDefined()
 })
 
@@ -592,7 +610,7 @@ test('Anthropic thinking', async () => {
     messages: [ { role: 'user', content: [{ type: 'text', text: 'prompt' }] }, ],
     max_tokens: 4096,
     stream: true,
-  })
+  }, expect.any(Object))
   await anthropic.stream(anthropic.buildModel('claude-3-7-sonnet-thinking'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
@@ -608,7 +626,7 @@ test('Anthropic thinking', async () => {
     },
     temperature: 1,
     stream: true,
-  })
+  }, expect.any(Object))
   await anthropic.stream(anthropic.buildModel('claude-3-7-sonnet-thinking'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
@@ -619,7 +637,7 @@ test('Anthropic thinking', async () => {
     messages: [ { role: 'user', content: [{ type: 'text', text: 'prompt' }] }, ],
     max_tokens: 64000,
     stream: true,
-  })
+  }, expect.any(Object))
 })
 
 test('Anthropic streaming validation deny - yields canceled chunk', async () => {
@@ -882,7 +900,7 @@ test('Anthropic hook modifies tool results before second API call', async () => 
         ])
       })
     ])
-  }))
+  }), expect.any(Object))
 })
 
 test('Anthropic thinking block added to thread before tool uses', async () => {
@@ -993,5 +1011,5 @@ test('Anthropic stream preserves text content before tool calls', async () => {
         ])
       })
     ])
-  }))
+  }), expect.any(Object))
 })
