@@ -73,6 +73,13 @@ export default abstract class LlmEngine {
    */
   abstract stop(stream: any): Promise<void>
 
+  // per-request options for SDKs whose timeout only covers the wait for response headers (Anthropic, OpenAI, Groq):
+  // a lost request is retried fast. Loopback servers may hold headers while processing the prompt, so get no default.
+  streamRequestOptions(opts: LlmCompletionOpts|undefined, baseURL: string|undefined): { signal?: AbortSignal, timeout?: number } {
+    const timeout = opts?.timeout || (/^https?:\/\/(localhost|127\.|\[::1\])/i.test(baseURL ?? '') ? undefined : 90 * 1000)
+    return { ...(opts?.abortSignal ? { signal: opts.abortSignal } : {}), ...(timeout ? { timeout } : {}) }
+  }
+
   protected addTextToPayload(model: ChatModel, message: Message, attachment: Attachment, payload: LlmCompletionPayload, opts?: LlmCompletionOpts): void {
 
     if (Array.isArray(payload.content)) {
@@ -139,9 +146,8 @@ export default abstract class LlmEngine {
 
   async *generate(model: ChatModel|string, thread: Message[], opts?: LlmCompletionOpts): AsyncIterable<LlmChunk> {
 
-    // eslint-disable-next-line no-useless-catch
     try {
-      
+
       // init the streaming
       const chatModel = this.toModel(model)
       const response: LlmStreamingResponse = await this.stream(chatModel, thread, opts)
@@ -214,6 +220,8 @@ export default abstract class LlmEngine {
       }
 
     } catch (error) {
+      // a request cancelled by the caller ends quietly, like the between-chunks abort
+      if (opts?.abortSignal?.aborted) return
       // Re-throw the error to ensure it propagates to the caller
       // This is critical for async generators - errors need explicit handling
       throw error

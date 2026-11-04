@@ -1025,3 +1025,12 @@ test('Google stream preserves text content before tool calls', async () => {
     ])
   }))
 })
+
+test('Google stream passes abort signal', async () => {
+  const google = new Google(config)
+  const abortSignal = new AbortController().signal
+  await google.stream(google.buildModel('gemini-pro'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(_Google.GoogleGenAI.prototype.models.generateContentStream).toHaveBeenLastCalledWith(expect.objectContaining({
+    config: expect.objectContaining({ abortSignal }),
+  }))
+})

@@ -428,7 +428,7 @@ export default class extends LlmEngine {
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts<MessageCreateParams>(context.model, context.opts),
       stream: true,
-    }))
+    }), this.streamRequestOptions(context.opts, this.client.baseURL))
   }
 
   async doStreamBeta(context: AnthropicStreamingContext): Promise<LlmStream> {
@@ -441,7 +441,7 @@ export default class extends LlmEngine {
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts<MessageCreateParams>(context.model, context.opts),
       stream: true,
-    }))
+    }), this.streamRequestOptions(context.opts, this.client.baseURL))
   }
 
   getCompletionOpts(model: ChatModel, opts?: LlmCompletionOpts): Omit<MessageCreateParamsBase, 'model'|'messages'|'stream'|'tools'|'tool_choice'> {

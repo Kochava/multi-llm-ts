@@ -209,7 +209,7 @@ export default class extends LlmEngine {
       messages: context.thread,
       ...this.getCompletionOpts(context.model, context.opts),
       ...await this.getToolOpts(context.model, context.opts),
-    })
+    }, { fetchOptions: { signal: context.opts.abortSignal } })
 
     // done
     return stream

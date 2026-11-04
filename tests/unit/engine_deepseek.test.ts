@@ -133,7 +133,7 @@ test('DeepSeek stream', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
   expect(stream.controller).toBeDefined()
   let response = ''
@@ -173,7 +173,7 @@ test('DeepSeek stream without tools', async () => {
     stream_options: {
       include_usage: false
     }
-  }, {})
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
 })
 

@@ -150,7 +150,7 @@ test('Groq stream', async () => {
     tools: expect.any(Array),
     top_p: 4,
     stream: true,
-  })
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
   expect(stream.controller).toBeDefined()
   let response = ''
@@ -183,7 +183,7 @@ test('Groq stream', async () => {
     tools: expect.any(Array),
     top_p: 4,
     stream: true,
-  })
+  }, { timeout: 90000 })
   expect(lastMsg?.done).toBe(true)
   expect(response).toBe('response')
   expect(reasoning).toBe('reasoning')
@@ -210,26 +210,26 @@ test('Groq stream tool choice option', async () => {
   ], { toolChoice: { type: 'none' } })
   expect(_Groq.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: 'none',
-  }))
+  }), { timeout: 90000 })
   await groq.stream(groq.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'required' } })
   expect(_Groq.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: 'required',
-  }))
+  }), { timeout: 90000 })
   const { stream, context } = await groq.stream(groq.buildModel('model'), [
     new Message('system', 'instruction'),
     new Message('user', 'prompt'),
   ], { toolChoice: { type: 'tool', name: 'plugin1' } })
   expect(_Groq.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: { type: 'function', function: { name: 'plugin1' } },
-  }))
+  }), { timeout: 90000 })
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   for await (const chunk of stream) { for await (const msg of groq.processNativeChunk(chunk, context)) {/* empty */ } }
   expect(_Groq.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.objectContaining({
     tool_choice: 'auto',
-  }))
+  }), { timeout: 90000 })
 })
 
   test('Groq stream tools disabled', async () => {
@@ -249,7 +249,7 @@ test('Groq stream tool choice option', async () => {
     ],
     top_p: 4,
     stream: true,
-  })
+  }, { timeout: 90000 })
   expect(Plugin2.prototype.execute).not.toHaveBeenCalled()
 })
 
@@ -267,7 +267,7 @@ test('Groq stream without tools', async () => {
     ],
     top_p: 4,
     stream: true,
-  })
+  }, { timeout: 90000 })
   expect(stream).toBeDefined()
 })
 
@@ -572,7 +572,7 @@ test('Groq hook modifies tool results before second API call', async () => {
       expect.objectContaining({ role: 'tool', tool_call_id: '1', content: '"[truncated]"' }),
       expect.objectContaining({ role: 'tool', tool_call_id: '2', content: '"result2"' }),
     ])
-  }))
+  }), { timeout: 90000 })
 })
 
 test('Groq stream preserves text content before tool calls', async () => {
@@ -620,5 +620,12 @@ test('Groq stream preserves text content before tool calls', async () => {
         tool_calls: expect.any(Array)
       })
     ])
-  }))
+  }), { timeout: 90000 })
+})
+
+test('Groq stream passes abort signal and headers timeout', async () => {
+  const groq = new Groq(config)
+  const abortSignal = new AbortController().signal
+  await groq.stream(groq.buildModel('model'), [ new Message('user', 'prompt') ], { abortSignal })
+  expect(_Groq.prototype.chat.completions.create).toHaveBeenLastCalledWith(expect.any(Object), { signal: abortSignal, timeout: 90000 })
 })

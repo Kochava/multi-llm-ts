@@ -294,7 +294,7 @@ test('Generates tool calls information', async () => {
       ] },
       { role: 'tool', tool_call_id: 'tool1', name: 'plugin2', content: '{"result":"ok"}' },
     ]
-  }, {})
+  }, { timeout: 90000 })
 })
 
 test('Switch to vision when model provided', async () => {
@@ -318,7 +318,7 @@ test('Switch to vision when model provided', async () => {
         { 'type': 'image_url', 'image_url': { 'url': 'data:image/png;base64,image' } },
       ]}
     ]
-  }, {})
+  }, { timeout: 90000 })
 })
 
 test('Cannot switch to vision if not models provided', async () => {
@@ -337,7 +337,7 @@ test('Cannot switch to vision if not models provided', async () => {
       { role: 'system', content: 'instructions' },
       { role: 'user', content: [{ type: 'text', text: 'prompt1' }] }
     ]
-  }, {})
+  }, { timeout: 90000 })
 })
 
 test('Does not add the same plugin twice', async () => {
@@ -665,4 +665,14 @@ test('Tool execution delegate - abort during delegate execution', async () => {
     result: { error: 'Operation cancelled' },
     canceled: true,
   })
+})
+
+test('streamRequestOptions passes the caller signal and a 90s headers timeout, except on loopback', () => {
+  const engine = new OpenAI({})
+  const abortSignal = new AbortController().signal
+  expect(engine.streamRequestOptions({ abortSignal }, 'https://api.openai.com/v1')).toStrictEqual({ signal: abortSignal, timeout: 90000 })
+  expect(engine.streamRequestOptions({ timeout: 5000 }, 'https://api.openai.com/v1')).toStrictEqual({ timeout: 5000 })
+  expect(engine.streamRequestOptions({}, 'http://localhost:1234/v1')).toStrictEqual({})
+  expect(engine.streamRequestOptions({}, 'http://127.0.0.1:8080')).toStrictEqual({})
+  expect(engine.streamRequestOptions({ timeout: 5000 }, 'http://localhost:1234/v1')).toStrictEqual({ timeout: 5000 })
 })
