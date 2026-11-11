@@ -9,7 +9,7 @@ import logger from '../logger'
 import Message from '../models/message'
 import { ChatModel, EngineCreateOpts, ModelCapabilities, ModelMetadata, ModelOpenAI } from '../types/index'
 import { LlmCompletionPayload, LLmContentPayloadImageOpenai, LlmChunk, LlmCompletionOpts, LlmContentPayload, LlmResponse, LlmRole, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCall, LlmToolCallInfo, LlmToolChoice, LlmUsage } from '../types/llm'
-import { PluginExecutionResult } from '../types/plugin'
+import { PluginExecutionContext, PluginExecutionResult, PluginTool } from '../types/plugin'
 import { toOpenAITools } from '../tools'
 import { zeroUsage } from '../usage'
 import { PROVIDER_BASE_URLS } from '../defaults'
@@ -53,6 +53,10 @@ export type OpenAIStreamingContext = LlmStreamingContext<ChatCompletionMessagePa
 export default class extends LlmEngine {
 
   client: OpenAI
+
+  // each Responses tool sent to the model, mapped to the declaration it was built
+  // from, so a call is normalized against what that round sent without listing tools again
+  private responsesToolDeclarations = new WeakMap<Tool, PluginTool>()
 
   constructor(config: EngineCreateOpts, opts?: ClientOptions) {
     super(config)
@@ -711,18 +715,18 @@ export default class extends LlmEngine {
           logger.log(`[openai] tool call ${toolCall.name} with ${toolCall.arguments}`)
 
           // this can error
-          let args = null
+          let rawArgs = null
           try {
-            args = JSON.parse(toolCall.arguments)
+            rawArgs = JSON.parse(toolCall.arguments)
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${toolCall.arguments}"`, { cause: err })
           }
-          args = this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
+          const { context: toolContext, args } = this.prepareToolCall(activeTools, toolCall.name, rawArgs, model, opts)
 
           // now execute
           let lastUpdate: PluginExecutionResult|undefined = undefined
           for await (const update of this.callTool(
-            { model: model.id, abortSignal: opts?.abortSignal },
+            toolContext,
             toolCall.name, args,
             opts?.toolExecutionDelegate,
             opts?.toolExecutionValidation,
@@ -907,8 +911,7 @@ export default class extends LlmEngine {
         const parseToolCallArgs = (toolCall: ResponseFunctionToolCall): any => {
           const rawArgs = toolCall.arguments || ''
           try {
-            const args = rawArgs.trim() ? JSON.parse(rawArgs) : {}
-            return this.stripUnsetOptionalArgs(activeTools, toolCall.name, args)
+            return rawArgs.trim() ? JSON.parse(rawArgs) : {}
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${rawArgs}"`, { cause: err })
           }
@@ -921,7 +924,7 @@ export default class extends LlmEngine {
           }
           ensureToolRoundStarted()
 
-          const args = parseToolCallArgs(toolCall)
+          const { context: toolContext, args } = this.prepareToolCall(activeTools, toolCall.name, parseToolCallArgs(toolCall), model, opts)
           const toolCallId = toolCall.call_id || toolCall.id || key
           context.toolCalls.push({
             id: toolCallId,
@@ -946,7 +949,7 @@ export default class extends LlmEngine {
           const execution = (async (): Promise<ResponsesToolExecutionResult> => {
             try {
               let lastUpdate: PluginExecutionResult|undefined = undefined
-              for await (const update of this.callTool({ model: model.id, abortSignal: opts?.abortSignal }, toolCall.name, args, opts?.toolExecutionDelegate, opts?.toolExecutionValidation, opts?.toolCallGuard)) {
+              for await (const update of this.callTool(toolContext, toolCall.name, args, opts?.toolExecutionDelegate, opts?.toolExecutionValidation, opts?.toolCallGuard)) {
 
                 if (opts?.abortSignal?.aborted) {
                   enqueueToolChunk({
@@ -1524,13 +1527,15 @@ export default class extends LlmEngine {
         additionalProperties: false,
       }
 
-      return {
+      const responsesTool: Tool = {
         type: 'function',
         name: tool.name,
         description: tool.description,
         parameters: parameters,
         strict
       }
+      this.responsesToolDeclarations.set(responsesTool, tool)
+      return responsesTool
     })
 
   }
@@ -1642,62 +1647,20 @@ export default class extends LlmEngine {
   }
 
   // strict mode lists every property as required and makes the optional ones
-  // nullable, so the model has to send null (some send '') for anything it
-  // does not set; tools validate against their own schema and reject those,
-  // so unset optionals are dropped the way a non-strict model would omit them
-  private stripUnsetOptionalArgs(tools: Tool[] | undefined, name: string, args: any): any {
-    const tool = tools?.find((t: any) => t.type === 'function' && t.name === name) as any
-    // only tools we sent as strict forced the model to fill every property;
-    // for the others a null is what the model chose to send, so it stands
-    if (!tool?.strict) return args
-    if (!tool.parameters) return args
-    return this.stripUnsetInValue(tool.parameters, args)
-  }
-
-  // strict mode forces a value at every depth, so unset optionals also arrive
-  // as null/'' inside nested objects and array items
-  private stripUnsetInValue(schema: any, value: any): any {
-    if (!schema || value === null || typeof value !== 'object') return value
-
-    const structural = this.structuralSchema(schema)
-    if (!structural) return value
-
-    if (Array.isArray(value)) {
-      if (!structural.items) return value
-      for (const entry of value) {
-        this.stripUnsetInValue(structural.items, entry)
-      }
-      return value
+  // nullable, so the model has to send a value for anything it does not set;
+  // declaring the contract lets the engine drop those before the tool runs.
+  // only tools we sent as strict forced the model's hand: for the others a null
+  // is what the model chose to send, so no contract is declared and it stands.
+  // the args are normalized here, once, so every consumer of the call sees the same ones
+  private prepareToolCall(tools: Tool[] | undefined, name: string, rawArgs: any, model: ChatModel, opts?: LlmCompletionOpts): { context: PluginExecutionContext, args: any } {
+    const tool = tools?.find((t) => t.type === 'function' && t.name === name)
+    const context: PluginExecutionContext = {
+      model: model.id,
+      abortSignal: opts?.abortSignal,
+      ...(tool?.type === 'function' && tool.strict ? { coercion: 'strict-all-required' as const } : {}),
     }
-
-    const properties = structural.properties
-    if (!properties) return value
-    for (const [key, child] of Object.entries(value)) {
-      const childSchema = properties[key]
-      if (!childSchema) continue
-      if ((child === null || child === '') && this.schemaIsNullable(childSchema)) {
-        delete value[key]
-        continue
-      }
-      if (child && typeof child === 'object') {
-        this.stripUnsetInValue(childSchema, child)
-      }
-    }
-    return value
-  }
-
-  // makeSchemaNullable can wrap the real shape in an anyOf branch
-  private structuralSchema(schema: any): any {
-    if (schema.properties || schema.items) return schema
-    if (Array.isArray(schema.anyOf)) {
-      return schema.anyOf.find((entry: any) => entry && (entry.properties || entry.items))
-    }
-    return undefined
-  }
-
-  private schemaIsNullable(schema: any): boolean {
-    return this.schemaHasType(schema, 'null')
-      || (Array.isArray(schema.anyOf) && schema.anyOf.some((entry: any) => entry?.type === 'null'))
+    const declared = tool ? this.responsesToolDeclarations.get(tool) : undefined
+    return { context, args: this.normalizeToolArgs(context, declared, rawArgs) }
   }
 
   private schemaHasType(schema: any, type: string): boolean {

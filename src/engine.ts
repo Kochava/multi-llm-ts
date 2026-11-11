@@ -4,7 +4,7 @@ import { ChatModel, EngineCreateOpts, Model, ModelCapabilities, ModelMetadata, M
 import { LlmResponse, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LlmCompletionPayloadTool, LlmChunk, LlmToolCall, LlmStreamingResponse, LlmStreamingContext, CompletedToolCall, LlmUsage, LlmStream, LlmToolExecutionValidationCallback, LlmToolExecutionValidationResponse, LlmToolCallGuard, LlmChunkToolAbort, EngineHookName, EngineHookCallback, EngineHookPayloads, NormalizedToolChunk } from './types/llm'
 import { IPlugin, PluginExecutionContext, PluginExecutionUpdate, PluginParameter, PluginExecutionResult, PluginTool, ToolExecutionDelegate } from './types/plugin'
 import { Plugin, ICustomPlugin, MultiToolPlugin } from './plugin'
-import { normalizeToToolDefinition } from './tools'
+import { normalizeToToolDefinition, stripUnsetOptionalArgs } from './tools'
 import Attachment from './models/attachment'
 import Message from './models/message'
 import logger from './logger'
@@ -952,6 +952,16 @@ export default abstract class LlmEngine {
       throw new Error(typeof guarded?.error === 'string' ? guarded.error : JSON.stringify(guarded))
     }
 
+  }
+
+  // only a provider that forced the model to fill every property declares a coercion
+  // contract; without one a null is a value the model chose and reaches the tool as is.
+  // a provider that declares one calls this once, right after parsing the call, against
+  // the declaration it built the request from, so the chunks, the history, the guard,
+  // the validator and the tool all see the same arguments
+  protected normalizeToolArgs(context: PluginExecutionContext, declared: PluginTool | undefined, args: any): any {
+    if (context.coercion !== 'strict-all-required' || !declared) return args
+    return stripUnsetOptionalArgs(declared, args)
   }
 
   private async *executeTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback): AsyncGenerator<PluginExecutionUpdate> {

@@ -786,6 +786,26 @@ test('Google streaming validation abort - yields tool_abort chunk', async () => 
   })
 })
 
+// Gemini is never forced to send optional params, so a null it sends is a value
+// it chose: no coercion contract is declared and the tool receives it untouched
+test('Google passes nulls for optional params to the tool untouched', async () => {
+  const google = new Google(config)
+  google.addPlugin(new Plugin2())
+  const args = { param1: 'a', param2: null, param4: null }
+  vi.mocked(_Google.GoogleGenAI.prototype.models.generateContent).mockImplementationOnce(() => Promise.resolve({
+    candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'plugin2', args } }] }, finishReason: 'STOP' }],
+    functionCalls: [{ name: 'plugin2', args }],
+    text: null
+  }) as any)
+
+  await google.complete(google.buildModel('model'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ])
+
+  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'model' }, { param1: 'a', param2: null, param4: null })
+})
+
 test('Google chat validation deny - throws error', async () => {
   const google = new Google(config)
   google.addPlugin(new Plugin2())

@@ -755,6 +755,24 @@ test('Anthropic streaming validation abort - yields tool_abort chunk', async () 
   })
 })
 
+// Claude is never forced to send optional params, so a null it sends is a value
+// it chose: no coercion contract is declared and the tool receives it untouched
+test('Anthropic passes nulls for optional params to the tool untouched', async () => {
+  const anthropic = new Anthropic(config)
+  anthropic.addPlugin(new Plugin2())
+  vi.mocked(_Anthropic.default.prototype.messages.create).mockImplementationOnce(() => Promise.resolve({
+    stop_reason: 'tool_use',
+    content: [{ type: 'tool_use', id: '1', name: 'plugin2', input: { param1: 'a', param2: null, param4: null } }]
+  }) as any)
+
+  await anthropic.complete(anthropic.buildModel('model'), [
+    new Message('system', 'instruction'),
+    new Message('user', 'prompt'),
+  ])
+
+  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'model' }, { param1: 'a', param2: null, param4: null })
+})
+
 test('Anthropic chat validation deny - throws error', async () => {
   const anthropic = new Anthropic(config)
   anthropic.addPlugin(new Plugin2())

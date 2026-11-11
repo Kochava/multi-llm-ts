@@ -8,8 +8,8 @@ import LMStudio from '../../src/providers/lmstudio'
 import * as _openai from 'openai'
 import { EngineCreateOpts } from '../../src/types/index'
 import { z } from 'zod'
-import { MultiToolPlugin, Plugin } from '../../src/plugin'
-import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
+import { Plugin } from '../../src/plugin'
+import { PluginExecutionContext, PluginParameter, ToolExecutionDelegate } from '../../src/types/plugin'
 
 Plugin2.prototype.execute = vi.fn((): Promise<string> => Promise.resolve('result2'))
 
@@ -473,7 +473,7 @@ test('OpenAI Responses API completion with tools', async () => {
     stream: false
   })
 
-  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'gpt-4' }, ['arg'])
+  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'gpt-4', coercion: 'strict-all-required' }, ['arg'])
 
   expect(response).toStrictEqual({
     type: 'text',
@@ -678,7 +678,7 @@ test('OpenAI Responses API stream with tools', async () => {
     stream: true
   }, { timeout: 90000 })
 
-  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'gpt-4' }, ['arg'])
+  expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'gpt-4', coercion: 'strict-all-required' }, ['arg'])
   expect(response).toBe('response1response2')
   expect(lastMsg?.done).toBe(true)
 
@@ -1310,9 +1310,10 @@ test('explicit useResponsesApi false opts out of forced routing', () => {
 })
 
 // strict mode forces the model to emit every property, so optional ones the
-// model does not want to set arrive as null (or an empty string) instead of
-// being omitted; downstream tools validate against their own schema and
-// reject those, so they must be dropped before execution
+// model does not want to set arrive as null instead of being omitted; the
+// Responses paths declare the strict-all-required contract for strict tools so
+// the engine drops those before execution (the schema walk and the '' rule are
+// covered at engine level in engine_tool_args.test.ts)
 class LookupPlugin extends Plugin {
   getName(): string { return 'lookup' }
   getDescription(): string { return 'lookup things' }
@@ -1329,7 +1330,7 @@ class LookupPlugin extends Plugin {
   async execute(): Promise<any> { return { ok: true } }
 }
 
-const lookupArgs = JSON.stringify({ query: 'scrum', offset: null, team: '', limit: null })
+const lookupArgs = JSON.stringify({ query: 'scrum', offset: null, team: null, limit: null })
 
 test('Responses non-streaming drops unset optional args before executing the tool', async () => {
   const create = _openai.default.prototype.responses.create as Mock
@@ -1477,50 +1478,57 @@ test('Responses streaming strips unset optionals for a tool granted mid-conversa
   execute.mockRestore()
 })
 
-// strict mode applies at every depth: a tool whose optional fields live inside
-// array items or nested objects gets nulls there too, and those have to be
-// dropped just like the top-level ones (asana create_tasks in the field)
-class BatchPlugin extends MultiToolPlugin {
-  getName(): string { return 'batch' }
-  getDescription(): string { return 'batch things' }
-  getPreparationDescription(): string { return 'preparing batch' }
-  getRunningDescription(): string { return 'running batch' }
-  handlesTool(name: string): boolean { return name === 'create_tasks' }
-  async getTools(): Promise<any[]> {
-    return [{
-      name: 'create_tasks',
-      description: 'create several tasks',
-      parameters: [{
-        name: 'tasks',
-        type: 'array',
-        description: 'the tasks',
-        required: true,
-        items: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' },
-            parent: { type: 'string' },
-            due_at: { type: 'string', format: 'date-time' },
-            approval_status: { type: 'string', enum: ['pending', 'approved'] },
-            assignee: {
-              type: 'object',
-              properties: { gid: { type: 'string' }, note: { type: 'string' } },
-              required: ['gid'],
-            },
-          },
-          required: ['name'],
-        },
-      }],
-    }]
-  }
-  async execute(): Promise<any> { return { ok: true } }
-}
+// the args are normalized once, right after parsing, so everything that reports
+// or checks the call sees what the tool sees, not the strict-mode nulls
+test('Responses streaming reports the normalized args in chunks, history and status', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: 'resp_1' } }
+      yield { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } }
+      yield { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: lookupArgs }
+      yield { type: 'response.output_item.done', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: lookupArgs } }
+      yield { type: 'response.completed', response: { id: 'resp_1' } }
+    }
+  }))
+  create.mockImplementationOnce(async () => ({
+    async * [Symbol.asyncIterator]() {
+      yield { type: 'response.created', response: { id: 'resp_2' } }
+      yield { type: 'response.output_text.delta', delta: 'done' }
+      yield { type: 'response.completed', response: { id: 'resp_2' } }
+    }
+  }))
 
-const runBatchTool = async (args: any) => {
+  const openai = new OpenAI(config)
+  const plugin = new LookupPlugin()
+  const running = vi.spyOn(plugin, 'getRunningDescription')
+  const completed = vi.spyOn(plugin, 'getCompletedDescription')
+  openai.addPlugin(plugin)
+  const historyArgs: any[] = []
+  openai.addHook('beforeToolCallsResponse', async (context) => {
+    historyArgs.push(...context.toolHistory.map((entry) => entry.args))
+  })
+
+  const { stream } = await openai.stream(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+  const toolChunks: any[] = []
+  for await (const chunk of stream) {
+    if (chunk.type === 'tool' && chunk.call) toolChunks.push(chunk)
+  }
+
+  expect(toolChunks.map((chunk) => chunk.state)).toStrictEqual(['running', 'completed'])
+  for (const chunk of toolChunks) {
+    expect(chunk.call.params).toStrictEqual({ query: 'scrum' })
+  }
+  expect(historyArgs).toStrictEqual([{ query: 'scrum' }])
+  expect(running).toHaveBeenCalledWith('lookup', { query: 'scrum' })
+  expect(completed.mock.calls[0][1]).toStrictEqual({ query: 'scrum' })
+})
+
+test('Responses non-streaming reports the normalized args in the tool calls it returns', async () => {
   const create = _openai.default.prototype.responses.create as Mock
   create.mockImplementationOnce(async () => ({
     id: 'resp_1',
-    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'create_tasks', arguments: JSON.stringify(args) }],
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: lookupArgs }],
   }))
   create.mockImplementationOnce(async () => ({
     id: 'resp_2',
@@ -1528,42 +1536,70 @@ const runBatchTool = async (args: any) => {
   }))
 
   const openai = new OpenAI(config)
-  const plugin = new BatchPlugin()
-  const execute = vi.spyOn(plugin, 'execute')
-  openai.addPlugin(plugin)
+  openai.addPlugin(new LookupPlugin())
 
-  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
+  const response = await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {})
 
-  expect(execute).toHaveBeenCalledTimes(1)
-  return (execute.mock.calls[0][1] as any).parameters
-}
-
-test('Responses drops unset optionals nested inside array items', async () => {
-  const params = await runBatchTool({
-    tasks: [{ name: 'Task one', parent: null, due_at: null, approval_status: null }],
-  })
-  expect(params).toStrictEqual({ tasks: [{ name: 'Task one' }] })
+  expect(response.toolCalls).toHaveLength(1)
+  expect(response.toolCalls![0].params).toStrictEqual({ query: 'scrum' })
 })
 
-test('Responses drops empty strings nested inside array items', async () => {
-  const params = await runBatchTool({
-    tasks: [{ name: 'Task one', parent: '', due_at: '' }],
+test('Responses hands the normalized args to the tool call guard and the validator', async () => {
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: lookupArgs }],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
+
+  const openai = new OpenAI(config)
+  openai.addPlugin(new LookupPlugin())
+  const beforeExecute = vi.fn(async (_context: any, _tool: string, args: any) => ({ args }))
+  const validator = vi.fn().mockResolvedValue({ decision: 'allow' })
+
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], {
+    toolCallGuard: { beforeExecute },
+    toolExecutionValidation: validator,
   })
-  expect(params).toStrictEqual({ tasks: [{ name: 'Task one' }] })
+
+  expect(beforeExecute.mock.calls[0][2]).toStrictEqual({ query: 'scrum' })
+  expect(validator.mock.calls[0][2]).toStrictEqual({ query: 'scrum' })
 })
 
-test('Responses drops unset optionals inside a nested object', async () => {
-  const params = await runBatchTool({
-    tasks: [{ name: 'Task one', assignee: { gid: '123', note: null } }],
-  })
-  expect(params).toStrictEqual({ tasks: [{ name: 'Task one', assignee: { gid: '123' } }] })
-})
+// the declarations come from the round's request, so a response with several
+// calls does not list the tools again (a delegate may list them remotely)
+test('Responses normalizes delegate tools without listing the tools again per call', async () => {
+  const remoteArgs = (id: string) => JSON.stringify({ id, note: null })
+  const create = _openai.default.prototype.responses.create as Mock
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_1',
+    output: [
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'remote', arguments: remoteArgs('a') },
+      { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'remote', arguments: remoteArgs('b') },
+    ],
+  }))
+  create.mockImplementationOnce(async () => ({
+    id: 'resp_2',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+  }))
 
-test('Responses keeps a null on a required nested field so the tool can report it', async () => {
-  const params = await runBatchTool({
-    tasks: [{ name: null, parent: null }],
-  })
-  expect(params).toStrictEqual({ tasks: [{ name: null }] })
+  const delegate: ToolExecutionDelegate = {
+    getTools: vi.fn(() => [{ name: 'remote', description: 'remote tool', parameters: [
+      { name: 'id', type: 'string', description: 'id', required: true },
+      { name: 'note', type: 'string', description: 'note', required: false },
+    ] }]),
+    execute: vi.fn(async () => ({ ok: true })),
+  }
+
+  const openai = new OpenAI(config)
+  await openai.complete(openai.buildModel('gpt-5.6-luna'), [ new Message('user', 'prompt') ], { toolExecutionDelegate: delegate })
+
+  expect(vi.mocked(delegate.execute).mock.calls.map((call) => call[2])).toStrictEqual([{ id: 'a' }, { id: 'b' }])
+  // once for the first request, once for the follow-up: not once more per call
+  expect(delegate.getTools).toHaveBeenCalledTimes(2)
 })
 
 // a tool we could not send as strict never forced the model's hand, so a null

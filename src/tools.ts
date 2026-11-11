@@ -174,3 +174,77 @@ function convertItemsToJsonSchema(items: PluginParameter['items']): any {
     required,
   }
 }
+
+/**
+ * Drops the values a strict-all-required model had to send for optional fields
+ * it did not set, walking the tool's declared schema through nested objects and
+ * array items. Returns new objects; the input is left untouched.
+ *
+ * Under the contract:
+ * - null on an optional field is dropped
+ * - '' on an optional field is dropped only when the field declares a format or
+ *   an enum without '', i.e. where '' is provably invalid; elsewhere it may be a
+ *   deliberate blank (e.g. clearing a description) and is kept
+ * - required fields keep whatever was sent so the tool can report it
+ *
+ * Optional means `required: false` on a PluginParameter, or absent from the
+ * `required` list of a JSON Schema object — the same fields the OpenAI Responses
+ * conversion makes nullable.
+ */
+export function stripUnsetOptionalArgs(tool: PluginTool, args: any): any {
+  return stripUnsetInObject(declaredFields({ properties: tool.parameters }), args)
+}
+
+type DeclaredField = { schema: any, optional: boolean }
+
+function stripUnsetInValue(schema: any, value: any): any {
+  if (value === null || typeof value !== 'object') return value
+  const shape = structuralSchema(schema)
+  if (!shape) return value
+  if (Array.isArray(value)) {
+    return shape.items ? value.map((entry) => stripUnsetInValue(shape.items, entry)) : value
+  }
+  return stripUnsetInObject(declaredFields(shape), value)
+}
+
+function stripUnsetInObject(fields: Record<string, DeclaredField> | undefined, value: any): any {
+  if (!fields || value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const result: Record<string, any> = {}
+  for (const [key, child] of Object.entries(value)) {
+    const field = fields[key]
+    if (field?.optional && isUnset(field.schema, child)) continue
+    result[key] = field ? stripUnsetInValue(field.schema, child) : child
+  }
+  return result
+}
+
+// properties come either as PluginParameter[] or as a JSON Schema record
+function declaredFields(schema: any): Record<string, DeclaredField> | undefined {
+  const properties = schema.properties
+  if (Array.isArray(properties)) {
+    return Object.fromEntries(properties.map((param: PluginParameter) => [param.name, { schema: param, optional: param.required === false }]))
+  }
+  if (properties && typeof properties === 'object') {
+    const required = Array.isArray(schema.required) ? schema.required : undefined
+    return Object.fromEntries(Object.entries(properties).map(([key, child]) => [key, { schema: child, optional: !!required && !required.includes(key) }]))
+  }
+  return undefined
+}
+
+function isUnset(schema: any, value: any): boolean {
+  if (value === null) return true
+  if (value !== '') return false
+  return schema.format !== undefined || (Array.isArray(schema.enum) && !schema.enum.includes(''))
+}
+
+// the object/array shape may sit in a union branch (anyOf, oneOf, or a type list)
+function structuralSchema(schema: any): any {
+  if (!schema || typeof schema !== 'object') return undefined
+  if (schema.properties || schema.items) return schema
+  const branches = [
+    ...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
+    ...(Array.isArray(schema.oneOf) ? schema.oneOf : []),
+    ...(Array.isArray(schema.type) ? schema.type : []),
+  ]
+  return branches.find((entry: any) => entry && typeof entry === 'object' && (entry.properties || entry.items))
+}
