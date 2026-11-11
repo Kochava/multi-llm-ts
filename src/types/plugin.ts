@@ -39,9 +39,18 @@ export type PluginTool = {
   parameters: PluginParameter[]
 }
 
+/**
+ * How a provider coerced the tool schema it sent to the model.
+ * - 'strict-all-required': every property was sent as required and the optional
+ *   ones as nullable, so the model had to send a value (null, sometimes '') for
+ *   optionals it did not mean to set. The engine drops those before the tool runs.
+ */
+export type ToolArgsCoercion = 'strict-all-required'
+
 export type PluginExecutionContext = {
   model: string
   abortSignal?: AbortSignal
+  coercion?: ToolArgsCoercion
 }
 
 export type PluginExecutionStatusUpdate = {

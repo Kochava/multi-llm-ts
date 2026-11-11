@@ -4,7 +4,7 @@ import { ChatModel, EngineCreateOpts, Model, ModelCapabilities, ModelMetadata, M
 import { LlmResponse, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LlmCompletionPayloadTool, LlmChunk, LlmToolCall, LlmStreamingResponse, LlmStreamingContext, CompletedToolCall, LlmUsage, LlmStream, LlmToolExecutionValidationCallback, LlmToolExecutionValidationResponse, LlmToolCallGuard, LlmChunkToolAbort, EngineHookName, EngineHookCallback, EngineHookPayloads, NormalizedToolChunk } from './types/llm'
 import { IPlugin, PluginExecutionContext, PluginExecutionUpdate, PluginParameter, PluginExecutionResult, PluginTool, ToolExecutionDelegate } from './types/plugin'
 import { Plugin, ICustomPlugin, MultiToolPlugin } from './plugin'
-import { normalizeToToolDefinition } from './tools'
+import { normalizeToToolDefinition, stripUnsetOptionalArgs } from './tools'
 import Attachment from './models/attachment'
 import Message from './models/message'
 import logger from './logger'
@@ -910,6 +910,9 @@ export default abstract class LlmEngine {
 
   protected async *callTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback, toolCallGuard?: LlmToolCallGuard): AsyncGenerator<PluginExecutionUpdate> {
 
+    // before the guard, the validator and the multi-tool { tool, parameters } wrap
+    args = await this.normalizeToolArgs(context, tool, args, delegate)
+
     if (!toolCallGuard) {
       yield* this.executeTool(context, tool, args, delegate, toolExecutionValidation)
       return
@@ -952,6 +955,15 @@ export default abstract class LlmEngine {
       throw new Error(typeof guarded?.error === 'string' ? guarded.error : JSON.stringify(guarded))
     }
 
+  }
+
+  // only a provider that forced the model to fill every property declares a coercion
+  // contract; without one a null is a value the model chose and reaches the tool as is
+  private async normalizeToolArgs(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate): Promise<any> {
+    if (context.coercion !== 'strict-all-required') return args
+    // the same declarations the provider built the request from, delegate tools included
+    const declared = (await this.getAvailableTools(delegate)).find((t) => t.name === tool)
+    return declared ? stripUnsetOptionalArgs(declared, args) : args
   }
 
   private async *executeTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback): AsyncGenerator<PluginExecutionUpdate> {
