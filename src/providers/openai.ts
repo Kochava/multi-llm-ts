@@ -9,7 +9,7 @@ import logger from '../logger'
 import Message from '../models/message'
 import { ChatModel, EngineCreateOpts, ModelCapabilities, ModelMetadata, ModelOpenAI } from '../types/index'
 import { LlmCompletionPayload, LLmContentPayloadImageOpenai, LlmChunk, LlmCompletionOpts, LlmContentPayload, LlmResponse, LlmRole, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCall, LlmToolCallInfo, LlmToolChoice, LlmUsage } from '../types/llm'
-import { PluginExecutionContext, PluginExecutionResult } from '../types/plugin'
+import { PluginExecutionContext, PluginExecutionResult, PluginTool } from '../types/plugin'
 import { toOpenAITools } from '../tools'
 import { zeroUsage } from '../usage'
 import { PROVIDER_BASE_URLS } from '../defaults'
@@ -53,6 +53,10 @@ export type OpenAIStreamingContext = LlmStreamingContext<ChatCompletionMessagePa
 export default class extends LlmEngine {
 
   client: OpenAI
+
+  // each Responses tool sent to the model, mapped to the declaration it was built
+  // from, so a call is normalized against what that round sent without listing tools again
+  private responsesToolDeclarations = new WeakMap<Tool, PluginTool>()
 
   constructor(config: EngineCreateOpts, opts?: ClientOptions) {
     super(config)
@@ -711,17 +715,18 @@ export default class extends LlmEngine {
           logger.log(`[openai] tool call ${toolCall.name} with ${toolCall.arguments}`)
 
           // this can error
-          let args = null
+          let rawArgs = null
           try {
-            args = JSON.parse(toolCall.arguments)
+            rawArgs = JSON.parse(toolCall.arguments)
           } catch (err) {
             throw new Error(`[openai] tool call ${toolCall.name} with invalid JSON args: "${toolCall.arguments}"`, { cause: err })
           }
+          const { context: toolContext, args } = this.prepareToolCall(activeTools, toolCall.name, rawArgs, model, opts)
 
           // now execute
           let lastUpdate: PluginExecutionResult|undefined = undefined
           for await (const update of this.callTool(
-            this.toolCallContext(activeTools, toolCall.name, model, opts),
+            toolContext,
             toolCall.name, args,
             opts?.toolExecutionDelegate,
             opts?.toolExecutionValidation,
@@ -919,8 +924,7 @@ export default class extends LlmEngine {
           }
           ensureToolRoundStarted()
 
-          const args = parseToolCallArgs(toolCall)
-          const toolContext = this.toolCallContext(activeTools, toolCall.name, model, opts)
+          const { context: toolContext, args } = this.prepareToolCall(activeTools, toolCall.name, parseToolCallArgs(toolCall), model, opts)
           const toolCallId = toolCall.call_id || toolCall.id || key
           context.toolCalls.push({
             id: toolCallId,
@@ -1523,13 +1527,15 @@ export default class extends LlmEngine {
         additionalProperties: false,
       }
 
-      return {
+      const responsesTool: Tool = {
         type: 'function',
         name: tool.name,
         description: tool.description,
         parameters: parameters,
         strict
       }
+      this.responsesToolDeclarations.set(responsesTool, tool)
+      return responsesTool
     })
 
   }
@@ -1644,14 +1650,17 @@ export default class extends LlmEngine {
   // nullable, so the model has to send a value for anything it does not set;
   // declaring the contract lets the engine drop those before the tool runs.
   // only tools we sent as strict forced the model's hand: for the others a null
-  // is what the model chose to send, so no contract is declared and it stands
-  private toolCallContext(tools: Tool[] | undefined, name: string, model: ChatModel, opts?: LlmCompletionOpts): PluginExecutionContext {
+  // is what the model chose to send, so no contract is declared and it stands.
+  // the args are normalized here, once, so every consumer of the call sees the same ones
+  private prepareToolCall(tools: Tool[] | undefined, name: string, rawArgs: any, model: ChatModel, opts?: LlmCompletionOpts): { context: PluginExecutionContext, args: any } {
     const tool = tools?.find((t) => t.type === 'function' && t.name === name)
-    return {
+    const context: PluginExecutionContext = {
       model: model.id,
       abortSignal: opts?.abortSignal,
       ...(tool?.type === 'function' && tool.strict ? { coercion: 'strict-all-required' as const } : {}),
     }
+    const declared = tool ? this.responsesToolDeclarations.get(tool) : undefined
+    return { context, args: this.normalizeToolArgs(context, declared, rawArgs) }
   }
 
   private schemaHasType(schema: any, type: string): boolean {

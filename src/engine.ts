@@ -910,9 +910,6 @@ export default abstract class LlmEngine {
 
   protected async *callTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback, toolCallGuard?: LlmToolCallGuard): AsyncGenerator<PluginExecutionUpdate> {
 
-    // before the guard, the validator and the multi-tool { tool, parameters } wrap
-    args = await this.normalizeToolArgs(context, tool, args, delegate)
-
     if (!toolCallGuard) {
       yield* this.executeTool(context, tool, args, delegate, toolExecutionValidation)
       return
@@ -958,12 +955,13 @@ export default abstract class LlmEngine {
   }
 
   // only a provider that forced the model to fill every property declares a coercion
-  // contract; without one a null is a value the model chose and reaches the tool as is
-  private async normalizeToolArgs(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate): Promise<any> {
-    if (context.coercion !== 'strict-all-required') return args
-    // the same declarations the provider built the request from, delegate tools included
-    const declared = (await this.getAvailableTools(delegate)).find((t) => t.name === tool)
-    return declared ? stripUnsetOptionalArgs(declared, args) : args
+  // contract; without one a null is a value the model chose and reaches the tool as is.
+  // a provider that declares one calls this once, right after parsing the call, against
+  // the declaration it built the request from, so the chunks, the history, the guard,
+  // the validator and the tool all see the same arguments
+  protected normalizeToolArgs(context: PluginExecutionContext, declared: PluginTool | undefined, args: any): any {
+    if (context.coercion !== 'strict-all-required' || !declared) return args
+    return stripUnsetOptionalArgs(declared, args)
   }
 
   private async *executeTool(context: PluginExecutionContext, tool: string, args: any, delegate?: ToolExecutionDelegate, toolExecutionValidation?: LlmToolExecutionValidationCallback): AsyncGenerator<PluginExecutionUpdate> {

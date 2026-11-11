@@ -233,7 +233,7 @@ function declaredFields(schema: any): Record<string, DeclaredField> | undefined 
 
 function isUnset(schema: any, value: any): boolean {
   if (value === null) return true
-  if (value !== '' || !schema) return false
+  if (value !== '') return false
   return schema.format !== undefined || (Array.isArray(schema.enum) && !schema.enum.includes(''))
 }
 

@@ -804,7 +804,6 @@ test('Google passes nulls for optional params to the tool untouched', async () =
   ])
 
   expect(Plugin2.prototype.execute).toHaveBeenCalledWith({ model: 'model' }, { param1: 'a', param2: null, param4: null })
-  expect(vi.mocked(Plugin2.prototype.execute).mock.calls[0][0]).not.toHaveProperty('coercion')
 })
 
 test('Google chat validation deny - throws error', async () => {

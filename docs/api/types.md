@@ -243,7 +243,7 @@ interface PluginExecutionContext {
 }
 ```
 
-`coercion` is set by a provider that forced the model to send every tool property. Today only the OpenAI Responses API sets it, and only for tools it sent with `strict: true`. When it is set, the engine normalizes the arguments once, before the tool call guard, the validator and the tool run. It walks the tool's declared schema (plugin, multi-tool or delegate `getTools()`) through nested objects and array items:
+`coercion` is set by a provider that forced the model to send every tool property. Today only the OpenAI Responses API sets it, and only for tools it sent with `strict: true`. When it is set, the arguments are normalized once, right after the call is parsed, against the declaration the request was built from (plugin, multi-tool or delegate `getTools()`). Every consumer of the call then sees the same arguments: the tool chunks' `call.params`, the tool history, the plugin's status descriptions, the tool call guard, the validator and the tool. The schema walk goes through nested objects and array items:
 
 - `null` on an optional field is dropped. A field is optional when it has `required: false` on a `PluginParameter`, or when it is missing from a JSON Schema `required` list.
 - `''` on an optional field is dropped only if the field declares a `format`, or an `enum` that does not list `''`. Anywhere else an empty string may be a deliberate blank, so it is kept.

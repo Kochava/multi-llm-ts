@@ -1,11 +1,12 @@
-import { vi, expect, test, describe } from 'vitest'
+import { expect, test, describe } from 'vitest'
 import OpenAI from '../../src/providers/openai'
 import { MultiToolPlugin, Plugin } from '../../src/plugin'
-import { PluginExecutionContext, PluginExecutionUpdate, PluginParameter, ToolExecutionDelegate } from '../../src/types/plugin'
-import { LlmToolCallGuard } from '../../src/types/llm'
+import { PluginExecutionContext, PluginParameter } from '../../src/types/plugin'
 
-// tool-argument normalization at the engine → plugin boundary (LlmEngine.callTool):
-// it only runs when the provider declares the strict-all-required coercion contract
+// tool-argument normalization (LlmEngine.normalizeToolArgs): it only applies when
+// the provider declares the strict-all-required coercion contract; the provider
+// wiring (one normalization shared by chunks, history, guard and tool) is covered
+// in engine_openai_responses.test.ts
 
 class LookupPlugin extends Plugin {
   getName(): string { return 'lookup' }
@@ -63,37 +64,18 @@ class BatchPlugin extends MultiToolPlugin {
 
 const strict: PluginExecutionContext = { model: 'model', coercion: 'strict-all-required' }
 
-const callTool = async (engine: OpenAI, context: PluginExecutionContext, tool: string, args: any, opts: {
-  delegate?: ToolExecutionDelegate, guard?: LlmToolCallGuard, validator?: any
-} = {}): Promise<PluginExecutionUpdate[]> => {
-  const updates: PluginExecutionUpdate[] = []
-  for await (const update of (engine as any).callTool(context, tool, args, opts.delegate, opts.validator, opts.guard)) {
-    updates.push(update)
-  }
-  return updates
-}
-
-const runLookup = async (context: PluginExecutionContext, args: any) => {
+const normalize = async (plugin: Plugin | MultiToolPlugin, context: PluginExecutionContext, tool: string, args: any) => {
   const engine = new OpenAI({ apiKey: '123' })
-  const plugin = new LookupPlugin()
-  const execute = vi.spyOn(plugin, 'execute')
   engine.addPlugin(plugin)
-  await callTool(engine, context, 'lookup', args)
-  expect(execute).toHaveBeenCalledTimes(1)
-  return execute.mock.calls[0][1]
+  const declared = (await (engine as any).getAvailableTools()).find((t: any) => t.name === tool)
+  expect(declared).toBeDefined()
+  return (engine as any).normalizeToolArgs(context, declared, args)
 }
 
-const runBatch = async (args: any) => {
-  const engine = new OpenAI({ apiKey: '123' })
-  const plugin = new BatchPlugin()
-  const execute = vi.spyOn(plugin, 'execute')
-  engine.addPlugin(plugin)
-  await callTool(engine, strict, 'create_tasks', args)
-  expect(execute).toHaveBeenCalledTimes(1)
-  return execute.mock.calls[0][1] as any
-}
+const runLookup = (context: PluginExecutionContext, args: any) => normalize(new LookupPlugin(), context, 'lookup', args)
+const runBatch = (args: any) => normalize(new BatchPlugin(), strict, 'create_tasks', args)
 
-describe('callTool argument normalization', () => {
+describe('normalizeToolArgs', () => {
 
   test('leaves every null and empty string untouched when no coercion contract is declared', async () => {
     const args = { query: 'scrum', offset: null, team: '', limit: null, status: '', due_on: '', kind: 'bug' }
@@ -101,9 +83,21 @@ describe('callTool argument normalization', () => {
     expect(params).toStrictEqual(args)
   })
 
+  test('leaves the arguments untouched when the tool has no declaration', async () => {
+    const engine = new OpenAI({ apiKey: '123' })
+    const args = { id: 'a', note: null }
+    expect((engine as any).normalizeToolArgs(strict, undefined, args)).toStrictEqual({ id: 'a', note: null })
+  })
+
   test('drops nulls for optional params under strict-all-required', async () => {
     const params = await runLookup(strict, { query: 'scrum', offset: null, limit: null, kind: 'bug' })
     expect(params).toStrictEqual({ query: 'scrum', kind: 'bug' })
+  })
+
+  test('returns a new object and leaves the parsed arguments untouched', async () => {
+    const args = { query: 'scrum', offset: null, kind: 'bug' }
+    await runLookup(strict, args)
+    expect(args).toStrictEqual({ query: 'scrum', offset: null, kind: 'bug' })
   })
 
   test('keeps a null on a required param so the tool can report it', async () => {
@@ -118,55 +112,32 @@ describe('callTool argument normalization', () => {
     expect(params).toStrictEqual({ query: 'scrum', team: '', kind: '' })
   })
 
-  test('drops unset optionals nested inside array items, before the multi-tool wrap', async () => {
-    const payload = await runBatch({
+  test('drops unset optionals nested inside array items', async () => {
+    const params = await runBatch({
       tasks: [{ name: 'Task one', parent: null, due_at: null, approval_status: null }],
     })
-    expect(payload).toStrictEqual({ tool: 'create_tasks', parameters: { tasks: [{ name: 'Task one' }] } })
+    expect(params).toStrictEqual({ tasks: [{ name: 'Task one' }] })
   })
 
   test('applies the empty-string rule inside array items', async () => {
-    const payload = await runBatch({
+    const params = await runBatch({
       tasks: [{ name: 'Task one', parent: '', due_at: '', approval_status: '' }],
     })
-    expect(payload.parameters).toStrictEqual({ tasks: [{ name: 'Task one', parent: '' }] })
+    expect(params).toStrictEqual({ tasks: [{ name: 'Task one', parent: '' }] })
   })
 
   test('drops unset optionals inside a nested object', async () => {
-    const payload = await runBatch({
+    const params = await runBatch({
       tasks: [{ name: 'Task one', assignee: { gid: '123', note: null } }],
     })
-    expect(payload.parameters).toStrictEqual({ tasks: [{ name: 'Task one', assignee: { gid: '123' } }] })
+    expect(params).toStrictEqual({ tasks: [{ name: 'Task one', assignee: { gid: '123' } }] })
   })
 
   test('keeps a null on a required nested field so the tool can report it', async () => {
-    const payload = await runBatch({
+    const params = await runBatch({
       tasks: [{ name: null, parent: null, assignee: { gid: null } }],
     })
-    expect(payload.parameters).toStrictEqual({ tasks: [{ name: null, assignee: { gid: null } }] })
-  })
-
-  test('the guard and the validator see the normalized arguments', async () => {
-    const engine = new OpenAI({ apiKey: '123' })
-    engine.addPlugin(new LookupPlugin())
-    const beforeExecute = vi.fn(async (_context: any, _tool: string, args: any) => ({ args }))
-    const validator = vi.fn().mockResolvedValue({ decision: 'allow' })
-    await callTool(engine, strict, 'lookup', { query: 'scrum', offset: null, kind: 'bug' }, { guard: { beforeExecute }, validator })
-    expect(beforeExecute.mock.calls[0][2]).toStrictEqual({ query: 'scrum', kind: 'bug' })
-    expect(validator.mock.calls[0][2]).toStrictEqual({ query: 'scrum', kind: 'bug' })
-  })
-
-  test('normalizes delegate tools against the schema the delegate declares', async () => {
-    const engine = new OpenAI({ apiKey: '123' })
-    const delegate: ToolExecutionDelegate = {
-      getTools: () => [{ name: 'remote', description: 'remote tool', parameters: [
-        { name: 'id', type: 'string', description: 'id', required: true },
-        { name: 'note', type: 'string', description: 'note', required: false },
-      ] }],
-      execute: vi.fn(async () => ({ ok: true })),
-    }
-    await callTool(engine, strict, 'remote', { id: 'a', note: null }, { delegate })
-    expect(vi.mocked(delegate.execute).mock.calls[0][2]).toStrictEqual({ id: 'a' })
+    expect(params).toStrictEqual({ tasks: [{ name: null, assignee: { gid: null } }] })
   })
 
 })
