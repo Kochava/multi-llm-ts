@@ -1,5 +1,5 @@
 
-import { EngineCreateOpts, ModelGoogle } from '../../src/types/index'
+import { ChatModel, EngineCreateOpts, ModelGoogle } from '../../src/types/index'
 import { vi, beforeEach, expect, test } from 'vitest'
 import { Plugin1, Plugin2, Plugin3 } from '../mocks/plugins'
 import Message from '../../src/models/message'
@@ -1033,4 +1033,85 @@ test('Google stream passes abort signal', async () => {
   expect(_Google.GoogleGenAI.prototype.models.generateContentStream).toHaveBeenLastCalledWith(expect.objectContaining({
     config: expect.objectContaining({ abortSignal }),
   }))
+})
+
+const thinkingConfigFor = async (model: string | ChatModel, opts: Record<string, unknown>) => {
+  const google = new Google(config)
+  const chatModel = typeof model === 'string' ? google.buildModel(model) : model
+  await google.stream(chatModel, [new Message('user', 'prompt')], { tools: false, ...opts })
+  // @ts-expect-error mock
+  return _Google.GoogleGenAI.prototype.models.generateContentStream.mock.calls[0][0].config.thinkingConfig
+}
+
+test('Google capabilities: Gemini 4 reasons', async () => {
+  const google = new Google(config)
+  expect(google.getModelCapabilities({ name: 'models/gemini-4-pro' } as ModelGoogle).reasoning).toBe(true)
+  expect(google.getModelCapabilities({ name: 'models/gemini-4.1-flash' } as ModelGoogle).reasoning).toBe(true)
+})
+
+test('Google thinking style: globs, meta and opts', async () => {
+  const google = new Google(config)
+  expect(google.getThinkingStyle(google.buildModel('gemini-4-pro'))).toBe('level')
+  expect(google.getThinkingStyle(google.buildModel('models/gemini-4-flash'))).toBe('level')
+  expect(google.getThinkingStyle(google.buildModel('gemini-3-pro-preview'))).toBe('budget')
+  expect(google.getThinkingStyle(google.buildModel('gemini-2.5-flash'))).toBe('budget')
+  expect(google.getThinkingStyle({ ...google.buildModel('alias'), meta: { thinking: 'level' } as any })).toBe('level')
+  expect(google.getThinkingStyle({ ...google.buildModel('gemini-4-pro'), meta: { thinking: 'budget' } as any })).toBe('budget')
+  expect(google.getThinkingStyle({ ...google.buildModel('gemini-4-pro'), meta: { thinking: 'dial' } as any })).toBe('level')
+  expect(google.getThinkingStyle({ ...google.buildModel('alias'), meta: { thinking: 'budget' } as any }, { thinkingStyle: 'level' })).toBe('level')
+  expect(google.getThinkingStyle(google.buildModel('gemini-4-pro'), { thinkingStyle: 'budget' })).toBe('budget')
+})
+
+test('Google level-only model: automatic budget sends thoughts only', async () => {
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingBudget: -1 })).toStrictEqual({ includeThoughts: true })
+})
+
+test('Google level-only model: budget 0 asks for low', async () => {
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingBudget: 0 })).toStrictEqual({ includeThoughts: true, thinkingLevel: 'LOW' })
+})
+
+test.each([
+  [1, 'LOW'], [1024, 'LOW'], [1025, 'MEDIUM'], [8192, 'MEDIUM'], [8193, 'HIGH'], [32768, 'HIGH'],
+])('Google level-only model: budget %i maps to %s', async (thinkingBudget, thinkingLevel) => {
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingBudget })).toStrictEqual({ includeThoughts: true, thinkingLevel })
+})
+
+test('Google level-only model: explicit level wins over the budget', async () => {
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingLevel: 'high', thinkingBudget: 0 })).toStrictEqual({ includeThoughts: true, thinkingLevel: 'HIGH' })
+  vi.clearAllMocks()
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingLevel: 'medium' })).toStrictEqual({ includeThoughts: true, thinkingLevel: 'MEDIUM' })
+})
+
+test('Google level-only model: never minimal, an unknown level falls back to the budget', async () => {
+  expect(await thinkingConfigFor('gemini-4-pro', { thinkingLevel: 'minimal', thinkingBudget: 0 })).toStrictEqual({ includeThoughts: true, thinkingLevel: 'LOW' })
+})
+
+test('Google level-only model: never sends a budget', async () => {
+  for (const thinkingBudget of [-1, 0, 1, 1024, 5000, 24576]) {
+    vi.clearAllMocks()
+    expect(await thinkingConfigFor('gemini-4-pro', { thinkingBudget })).not.toHaveProperty('thinkingBudget')
+  }
+})
+
+test('Google level-only model: nothing asked or reasoning off sends no thinking config', async () => {
+  expect(await thinkingConfigFor('gemini-4-pro', {})).toBeUndefined()
+  vi.clearAllMocks()
+  expect(await thinkingConfigFor('gemini-4-pro', { reasoning: false, thinkingBudget: 0 })).toBeUndefined()
+})
+
+test('Google level-only via meta: a proxy alias gets a level', async () => {
+  const google = new Google(config)
+  const model = { ...google.buildModel('stationone-hydrogen'), meta: { thinking: 'level' } as any }
+  model.capabilities.reasoning = true
+  expect(await thinkingConfigFor(model, { thinkingBudget: 0 })).toStrictEqual({ includeThoughts: true, thinkingLevel: 'LOW' })
+})
+
+test('Google budget models are unchanged', async () => {
+  expect(await thinkingConfigFor('gemini-2.5-flash', { thinkingBudget: 0 })).toStrictEqual({ includeThoughts: true, thinkingBudget: 0 })
+  vi.clearAllMocks()
+  expect(await thinkingConfigFor('gemini-3-pro-preview', { thinkingBudget: -1, thinkingLevel: 'high' })).toStrictEqual({ includeThoughts: true, thinkingBudget: -1 })
+  vi.clearAllMocks()
+  expect(await thinkingConfigFor('gemini-2.5-pro', { thinkingBudget: 4096, reasoning: false })).toStrictEqual({ includeThoughts: true, thinkingBudget: 4096 })
+  vi.clearAllMocks()
+  expect(await thinkingConfigFor('gemini-2.0-flash', { thinkingBudget: 1024 })).toBeUndefined()
 })

@@ -1,4 +1,4 @@
-import { Content, Environment, FunctionCallingConfigMode, FunctionDeclaration, FunctionResponse, GenerateContentConfig, GenerateContentResponse, GoogleGenAI, Part, Schema, Type } from '@google/genai'
+import { Content, Environment, ThinkingConfig, ThinkingLevel, FunctionCallingConfigMode, FunctionDeclaration, FunctionResponse, GenerateContentConfig, GenerateContentResponse, GoogleGenAI, Part, Schema, Type } from '@google/genai'
 import { minimatch } from 'minimatch'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import LlmEngine from '../engine'
@@ -7,7 +7,7 @@ import Attachment from '../models/attachment'
 import Message from '../models/message'
 import { Plugin } from '../plugin'
 import { ChatModel, EngineCreateOpts, ModelCapabilities, ModelGoogle } from '../types/index'
-import { LlmChunk, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LLmContentPayloadText, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
+import { LlmChunk, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LLmContentPayloadText, LlmGoogleThinkingLevel, LlmGoogleThinkingStyle, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
 import { PluginExecutionResult, PluginParameter } from '../types/plugin'
 import { addUsages, zeroUsage } from '../usage'
 
@@ -31,7 +31,7 @@ export type GoogleStreamingContext = LlmStreamingContext<Content> & {
   textContentBlock?: string
 }
 
-export default class extends LlmEngine {
+export default class GoogleEngine extends LlmEngine {
 
   client: GoogleGenAI
   computerInfo: GoogleComputerToolInfo|null = null
@@ -78,6 +78,7 @@ export default class extends LlmEngine {
       'gemini-2.5-flash*',
       'gemini-2.5-pro*',
       'gemini-3{-,.}*',
+      'gemini-4{-,.}*',
     ]
 
     // speech models are swept in by the version globs but do not reason
@@ -119,6 +120,41 @@ export default class extends LlmEngine {
     // done
     return { tools, vision, reasoning, caching: false }
     
+  }
+
+  // models that refuse a thinkingBudget and only take a thinkingLevel
+  static levelOnlyThinkingGlobs = [
+    'gemini-4-*',
+  ]
+
+  /** How this model is told how hard to think: opts, then model meta, then name globs. */
+  getThinkingStyle(model: ChatModel, opts?: GoogleCompletionOpts): LlmGoogleThinkingStyle {
+    const isStyle = (style: unknown): style is LlmGoogleThinkingStyle => style === 'level' || style === 'budget'
+    if (isStyle(opts?.thinkingStyle)) return opts.thinkingStyle
+    const metaStyle = (model.meta as { thinking?: unknown } | undefined)?.thinking
+    if (isStyle(metaStyle)) return metaStyle
+    const modelName = (model.id ?? '').replace('models/', '')
+    const globs = (this.constructor as typeof GoogleEngine).levelOnlyThinkingGlobs
+    return globs.some((m) => minimatch(modelName, m)) ? 'level' : 'budget'
+  }
+
+  /** The thinking config for a level-only model: never a budget, never 'minimal'. */
+  protected getLevelThinkingConfig(opts?: GoogleCompletionOpts): ThinkingConfig|undefined {
+    // wire values of ThinkingLevel, spelled out so a mocked or trimmed SDK cannot turn them undefined
+    const toEnum: Record<LlmGoogleThinkingLevel, ThinkingLevel> = {
+      low: 'LOW' as ThinkingLevel,
+      medium: 'MEDIUM' as ThinkingLevel,
+      high: 'HIGH' as ThinkingLevel,
+    }
+    if (opts?.reasoning === false) return undefined
+    const explicit = typeof opts?.thinkingLevel === 'string' ? toEnum[opts.thinkingLevel.toLowerCase() as LlmGoogleThinkingLevel] : undefined
+    if (explicit) return { includeThoughts: true, thinkingLevel: explicit }
+    const budget = opts?.thinkingBudget
+    // automatic (-1) or nothing asked: the model's default level
+    if (typeof budget !== 'number' || budget < 0) return { includeThoughts: true }
+    // 0 cannot turn thinking off on these models: it asks for the least
+    const thinkingLevel = budget <= 1024 ? toEnum.low : budget <= 8192 ? toEnum.medium : toEnum.high
+    return { includeThoughts: true, thinkingLevel }
   }
 
   isComputerUseModel(model: string): boolean {
@@ -413,7 +449,12 @@ export default class extends LlmEngine {
     }
 
     // add reasoning
-    if (model.capabilities.reasoning && typeof opts?.thinkingBudget !== 'undefined') {
+    if (model.capabilities.reasoning && this.getThinkingStyle(model, opts) === 'level') {
+      if (typeof opts?.thinkingBudget !== 'undefined' || typeof opts?.thinkingLevel !== 'undefined') {
+        const thinkingConfig = this.getLevelThinkingConfig(opts)
+        if (thinkingConfig) config.thinkingConfig = thinkingConfig
+      }
+    } else if (model.capabilities.reasoning && typeof opts?.thinkingBudget !== 'undefined') {
       config.thinkingConfig = {
         includeThoughts: true,
         thinkingBudget: opts.thinkingBudget

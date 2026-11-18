@@ -148,8 +148,17 @@ export type LlmAnthropicModelOpts = {
   reasoningBudget?: number
 }
 
+export type LlmGoogleThinkingLevel = 'low' | 'medium' | 'high'
+
+// 'budget': thinkingBudget (Gemini 2.5, 3). 'level': thinkingLevel only, a budget is refused (Gemini 4)
+export type LlmGoogleThinkingStyle = 'budget' | 'level'
+
 export type LlmGoogleModelOpts = {
   thinkingBudget?: number
+  // level-only models: wins over thinkingBudget
+  thinkingLevel?: LlmGoogleThinkingLevel
+  // overrides the provider's detection (e.g. a proxy that knows its models)
+  thinkingStyle?: LlmGoogleThinkingStyle
 }
 
 export type LlmOllamaThink = boolean | 'high' | 'medium' | 'low'
