@@ -127,10 +127,12 @@ test('Google buildGooglePayload with tool calls', async () => {
     { role: 'model', parts: [{
       thoughtSignature: 'abcdef',
       functionCall: { name: 'plugin2', args: { param: 'value' } },
-    }, { text: 'text' }]},
+    }]},
     { role: 'user', parts : [{
       functionResponse: { id: 'plugin2', name: 'plugin2', response: { result: 'ok' } }
     }]},
+    // what the reply wrote comes after the results it saw
+    { role: 'model', parts: [{ text: 'text' }]},
   ])
 })
 
@@ -219,8 +221,8 @@ test('Google completion', async () => {
   expect(_Google.GoogleGenAI.prototype.models.generateContent).toHaveBeenCalledWith({
     model: 'gemma',
     contents: [
-      { role: 'user', parts: [{ text: 'instruction' }] },
-      { role: 'user', parts: [{ text: 'prompt' }] }
+      // no system instruction for gemma: it rides in the user turn (turns must alternate)
+      { role: 'user', parts: [{ text: 'instruction' }, { text: 'prompt' }] },
     ], config: {
       // systemInstruction: 'instruction',
       temperature: 0.8
@@ -518,13 +520,13 @@ test('Google stream', async () => {
     model: 'gemini-pro',
     contents: [
       { role: 'user', parts: [{ text: 'prompt' }] },
-      { role: 'assistant', parts: [
+      { role: 'model', parts: [
         { functionCall: { name: 'plugin1', args: [] } },
         { functionCall: { name: 'plugin2', args: ['arg'] } }
       ] },
       { role: 'user', parts: [
-        { functionResponse: { id: 'plugin1', name: 'plugin1', response: 'result1' } },
-        { functionResponse: { id: 'plugin2', name: 'plugin2', response: 'result2' } }
+        { functionResponse: { id: 'plugin1', name: 'plugin1', response: { result: 'result1' } } },
+        { functionResponse: { id: 'plugin2', name: 'plugin2', response: { result: 'result2' } } }
       ] },
     ], config: {
       systemInstruction: 'instruction',
@@ -968,7 +970,7 @@ test('Google hook modifies tool results before second API call', async () => {
         role: 'user',
         parts: expect.arrayContaining([
           expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin1', response: { result: '[truncated]' } }) }),
-          expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin2', response: 'result2' }) }),
+          expect.objectContaining({ functionResponse: expect.objectContaining({ name: 'plugin2', response: { result: 'result2' } }) }),
         ])
       })
     ])
@@ -1014,7 +1016,7 @@ test('Google stream preserves text content before tool calls', async () => {
   expect(_Google.GoogleGenAI.prototype.models.generateContentStream).toHaveBeenNthCalledWith(2, expect.objectContaining({
     contents: expect.arrayContaining([
       expect.objectContaining({
-        role: 'assistant',
+        role: 'model',
         parts: expect.arrayContaining([
           // Text part should come first
           expect.objectContaining({ text: 'Let me search for that.' }),
@@ -1114,4 +1116,23 @@ test('Google budget models are unchanged', async () => {
   expect(await thinkingConfigFor('gemini-2.5-pro', { thinkingBudget: 4096, reasoning: false })).toStrictEqual({ includeThoughts: true, thinkingBudget: 4096 })
   vi.clearAllMocks()
   expect(await thinkingConfigFor('gemini-2.0-flash', { thinkingBudget: 1024 })).toBeUndefined()
+})
+
+test('Google completion sends a tool round as model and user turns with object responses', async () => {
+  // Gemini accepts only 'user' and 'model', and a function response must be an object
+  vi.mocked(_Google.GoogleGenAI.prototype.models.generateContent)
+    .mockResolvedValueOnce({
+      text: '',
+      candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'plugin1', args: {} } }] } }],
+      functionCalls: [{ name: 'plugin1', args: {} }],
+    } as unknown as GenerateContentResponse)
+    .mockResolvedValueOnce({ text: 'done', functionCalls: [] } as unknown as GenerateContentResponse)
+  const google = new Google(config)
+  google.addPlugin(new Plugin1())
+  await google.complete(google.buildModel('gemini-pro'), [new Message('user', 'prompt')])
+  const second = vi.mocked(_Google.GoogleGenAI.prototype.models.generateContent).mock.calls[1][0] as any
+  expect(second.contents.slice(1)).toStrictEqual([
+    { role: 'model', parts: [{ functionCall: { name: 'plugin1', args: {} } }] },
+    { role: 'user', parts: [{ functionResponse: { name: 'plugin1', response: { result: 'result1' } } }] },
+  ])
 })

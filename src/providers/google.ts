@@ -7,7 +7,7 @@ import Attachment from '../models/attachment'
 import Message from '../models/message'
 import { Plugin } from '../plugin'
 import { ChatModel, EngineCreateOpts, ModelCapabilities, ModelGoogle } from '../types/index'
-import { LlmChunk, LlmCompletionOpts, LlmCompletionPayload, LlmCompletionPayloadContent, LLmContentPayloadText, LlmGoogleThinkingLevel, LlmGoogleThinkingStyle, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
+import { LlmChunk, LlmCompletionOpts, LlmCompletionPayloadContent, LlmCompletionPayloadTool, LLmContentPayloadText, LlmGoogleThinkingLevel, LlmGoogleThinkingStyle, LlmResponse, LlmStream, LlmStreamingContext, LlmStreamingResponse, LlmToolCallInfo, LlmUsage } from '../types/llm'
 import { PluginExecutionResult, PluginParameter } from '../types/plugin'
 import { addUsages, zeroUsage } from '../usage'
 
@@ -248,7 +248,7 @@ export default class GoogleEngine extends LlmEngine {
 
         results.push({
           name: toolCall.name!,
-          response: content!
+          response: toFunctionResponse(content)
         })
 
         // save tool call info
@@ -262,7 +262,7 @@ export default class GoogleEngine extends LlmEngine {
 
       // function call
       thread.push({
-        role: 'assistant',
+        role: 'model',
         parts: response.candidates![0].content!.parts,
       })
 
@@ -557,73 +557,95 @@ export default class GoogleEngine extends LlmEngine {
       if (p.role === 'system') p.role = 'user'
       return p
     })
-    return payload.map((message) => this.messageToContent(message))
+
+    // A reply holds every tool call of every round it made, followed by one 'tool' payload
+    // per call. Gemini (and Vertex strictly) wants a function call turn answered by ONE turn
+    // carrying all its function responses, so the reply becomes: its calls, their results,
+    // then what it wrote (which it wrote after seeing the results).
+    const contents: Content[] = []
+    for (let i = 0; i < payload.length; i++) {
+      const message = payload[i]
+      if (message.role === 'tool') {
+        contents.push(this.toolResultsToContent([message as LlmCompletionPayloadTool]))
+        continue
+      }
+      const content = this.messageToContent(message as LlmCompletionPayloadContent)
+      const calls = content.parts!.filter((p) => p.functionCall)
+      if (!calls.length) {
+        contents.push(content)
+        continue
+      }
+      const results: LlmCompletionPayloadTool[] = []
+      while (payload[i + 1]?.role === 'tool') results.push(payload[++i] as LlmCompletionPayloadTool)
+      contents.push({ role: 'model', parts: calls })
+      if (results.length) contents.push(this.toolResultsToContent(results))
+      contents.push({ role: 'model', parts: content.parts!.filter((p) => !p.functionCall) })
+    }
+
+    return normalizeContents(contents)
   }
 
-  private messageToContent(payload: LlmCompletionPayload): Content {
-
-    if (payload.role === 'tool') {
-
-      let response = payload.content
-      try {
-        response = JSON.parse(response)
-      } catch {
-        // ignore
-      }
-
-      // Gemini's contents accept only 'user' and 'model'; a function response is a
-      // user turn carrying a functionResponse part. Sending role 'tool' returns
-      // 400 INVALID_ARGUMENT: "Role 'tool' is not supported."
-      return {
-        role: 'user',
-        parts: [ {
-          functionResponse: {
-            id: payload.name,
-            name: payload.name,
-            response: response as any,
-          }
-        } ],
-      }
-
-    } else {
-
-      const content: Content = {
-        role: payload.role == 'assistant' ? 'model' : payload.role as 'user' | 'model',
-        parts: Array.isArray(payload.content) ? payload.content.map((c) => ({
-          text: (c as LLmContentPayloadText).text,
-          // ...(c as LlmContentPayload).thoughtSignature ? { thoughtSignature: (c as LlmContentPayload).thoughtSignature } : {},
-        })) : [ {
-          text: payload.content as string,
-        } ],
-      }
-
-      if (payload.role === 'assistant' && payload.tool_calls) {
-        for (const tc of payload.tool_calls) {
-          content.parts!.splice(content.parts!.length-1, 0, {
-            functionCall: {
-              name: tc.function.name,
-              args: JSON.parse(tc.function.arguments),
-            },
-            ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {})
-          })
+  private toolResultsToContent(results: LlmCompletionPayloadTool[]): Content {
+    // Gemini's contents accept only 'user' and 'model'; a function response is a
+    // user turn carrying a functionResponse part. Sending role 'tool' returns
+    // 400 INVALID_ARGUMENT: "Role 'tool' is not supported."
+    return {
+      role: 'user',
+      parts: results.map((result) => {
+        let response: unknown = result.content
+        try {
+          response = JSON.parse(result.content as string)
+        } catch {
+          // not JSON: sent as text
         }
-      }
-      
-      // add images
-      for (const index in payload.images) {
-        content.parts!.push({
-          inlineData: {
-            mimeType: 'image/png',
-            data: payload.images[Number(index)],
+        return {
+          functionResponse: {
+            id: result.name,
+            name: result.name,
+            response: toFunctionResponse(response),
           }
+        }
+      }),
+    }
+  }
+
+  private messageToContent(payload: LlmCompletionPayloadContent): Content {
+
+    const content: Content = {
+      role: payload.role == 'assistant' ? 'model' : payload.role as 'user' | 'model',
+      parts: Array.isArray(payload.content) ? payload.content.map((c) => ({
+        text: (c as LLmContentPayloadText).text,
+        // ...(c as LlmContentPayload).thoughtSignature ? { thoughtSignature: (c as LlmContentPayload).thoughtSignature } : {},
+      })) : [ {
+        text: payload.content as string,
+      } ],
+    }
+
+    if (payload.role === 'assistant' && payload.tool_calls) {
+      for (const tc of payload.tool_calls) {
+        content.parts!.splice(content.parts!.length-1, 0, {
+          functionCall: {
+            name: tc.function.name,
+            args: parseToolArgs(tc.function.arguments),
+          },
+          ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {})
         })
       }
-      
-      // done
-      return content
-
     }
-  
+
+    // add images
+    for (const index in payload.images) {
+      content.parts!.push({
+        inlineData: {
+          mimeType: 'image/png',
+          data: payload.images[Number(index)],
+        }
+      })
+    }
+
+    // done
+    return content
+
   }
 
   private addAttachment(parts: Array<string|Part>, attachment: Attachment) {
@@ -745,7 +767,7 @@ export default class GoogleEngine extends LlmEngine {
 
           // assistant message with all content
           const assistantContent: Content = {
-            role: 'assistant',
+            role: 'model',
             parts: assistantParts,
           }
 
@@ -757,7 +779,7 @@ export default class GoogleEngine extends LlmEngine {
               functionResponse: {
                 id: tc.function,
                 name: tc.function,
-                response: result
+                response: toFunctionResponse(result)
               } as FunctionResponse
             })),
           }
@@ -802,4 +824,40 @@ export default class GoogleEngine extends LlmEngine {
     payload.images.push(attachment!.content)
   }
 
+}
+
+/** Gemini's functionResponse.response is a Struct: anything else (text, a list, a number) is wrapped. */
+export const toFunctionResponse = (response: unknown): Record<string, unknown> =>
+  typeof response === 'object' && response !== null && !Array.isArray(response)
+    ? response as Record<string, unknown>
+    : { result: response }
+
+/** A tool call stored without args (interrupted before they arrived) is sent with none. */
+const parseToolArgs = (args: unknown): Record<string, unknown> => {
+  if (typeof args !== 'string' || args.trim() === '') return {}
+  try {
+    const parsed = JSON.parse(args)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+const isEmptyText = (part: Part): boolean =>
+  'text' in part && !part.text && Object.keys(part).every((key) => key === 'text' || key === 'thoughtSignature')
+
+/** Drops empty text parts and turns left empty, then merges consecutive turns of the same role. */
+const normalizeContents = (contents: Content[]): Content[] => {
+  const normalized: Content[] = []
+  for (const content of contents) {
+    const parts = (content.parts ?? []).filter((part) => !isEmptyText(part))
+    if (!parts.length) continue
+    const previous = normalized[normalized.length - 1]
+    if (previous && previous.role === content.role) {
+      previous.parts!.push(...parts)
+    } else {
+      normalized.push({ ...content, parts })
+    }
+  }
+  return normalized
 }

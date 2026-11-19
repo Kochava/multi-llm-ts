@@ -339,7 +339,7 @@ export default abstract class LlmEngine {
               id: tc.id,
               function: {
                 name: tc.function,
-                arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args),
+                arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args ?? {}),
               },
               ...(this.supportsThoughtSignatures() && tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {})
             }
